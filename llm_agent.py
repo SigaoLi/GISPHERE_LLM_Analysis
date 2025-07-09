@@ -1,0 +1,448 @@
+"""
+LLM调用模块，支持OpenAI API和Ollama本地模型
+"""
+import json
+import logging
+import requests
+from typing import Optional, Dict, Any
+import time
+
+from config import OPENAI_MODEL, OPENAI_BASE_URL, OLLAMA_BASE_URL, OLLAMA_MODEL, check_openai_key
+from utils import validate_json_response, save_llm_conversation, check_ollama_availability
+
+logger = logging.getLogger(__name__)
+
+class LLMAgent:
+    def __init__(self):
+        self.use_openai = False
+        self.openai_client = None
+        self.conversation_history = []
+        self.conversation_saved = False  # 添加标志位，避免重复保存
+        
+        # 检查LLM可用性
+        self._initialize_llm()
+    
+    def _initialize_llm(self):
+        """初始化LLM"""
+        # 优先尝试OpenAI
+        openai_key = check_openai_key()
+        if openai_key:
+            try:
+                import openai
+                self.openai_client = openai.OpenAI(
+                    api_key=openai_key,
+                    base_url=OPENAI_BASE_URL
+                )
+                self.use_openai = True
+                logger.info(f"✅ OpenAI API 初始化成功 (Base URL: {OPENAI_BASE_URL})")
+                return
+            except Exception as e:
+                logger.warning(f"OpenAI API 初始化失败: {e}")
+        
+        # 尝试Ollama
+        if check_ollama_availability():
+            self.use_openai = False
+            logger.info("✅ Ollama 本地模型初始化成功")
+        else:
+            logger.error("❌ 无可用的LLM服务")
+            raise RuntimeError("无可用的LLM服务，请检查OpenAI API Key或Ollama服务")
+    
+    def reset_context(self):
+        """重置对话上下文（但保留conversation_history用于日志记录）"""
+        if self.use_openai:
+            # OpenAI API每次调用都是独立的，无需特殊处理
+            pass
+        else:
+            # Ollama需要清理上下文
+            try:
+                self._reset_ollama_context()
+            except Exception as e:
+                logger.warning(f"重置Ollama上下文失败: {e}")
+        
+        # 注意：不清空conversation_history，保留用于最终的日志记录
+        # 但重置保存标志，允许新的对话记录保存
+        self.conversation_saved = False
+        logger.info("LLM对话上下文已重置")
+    
+    def _reset_ollama_context(self):
+        """重置Ollama模型上下文"""
+        try:
+            # 通过发送一个特殊的重置请求来清空上下文
+            reset_url = f"{OLLAMA_BASE_URL}/api/generate"
+            reset_data = {
+                "model": OLLAMA_MODEL,
+                "prompt": "[RESET]",
+                "stream": False,
+                "options": {
+                    "num_ctx": 4096,
+                    "temperature": 0.1,
+                    "top_p": 0.001,
+                    "repetition_penalty": 1.05
+                }
+            }
+            
+            response = requests.post(reset_url, json=reset_data, timeout=10)
+            if response.status_code == 200:
+                logger.info("Ollama上下文重置成功")
+            else:
+                logger.warning(f"Ollama上下文重置失败: {response.status_code}")
+                
+        except Exception as e:
+            logger.warning(f"Ollama上下文重置异常: {e}")
+    
+    def call_llm(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """调用LLM获取响应"""
+        try:
+            if self.use_openai:
+                return self._call_openai(prompt, system_prompt)
+            else:
+                return self._call_ollama(prompt, system_prompt)
+        except Exception as e:
+            logger.error(f"LLM调用失败: {e}")
+            return None
+    
+    def _call_openai(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """调用OpenAI API"""
+        try:
+            messages = []
+            
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            
+            messages.append({"role": "user", "content": prompt})
+            
+            logger.info("调用OpenAI API...")
+            
+            response = self.openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=2000
+            )
+            
+            result = response.choices[0].message.content
+            
+            logger.info("OpenAI API调用成功")
+            return result
+            
+        except Exception as e:
+            logger.error(f"OpenAI API调用失败: {e}")
+            return None
+    
+    def _call_ollama(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """调用Ollama本地模型"""
+        try:
+            # 为qwen3模型特别优化prompt格式
+            if system_prompt:
+                full_prompt = f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            else:
+                full_prompt = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
+            
+            url = f"{OLLAMA_BASE_URL}/api/generate"
+            data = {
+                "model": OLLAMA_MODEL,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {
+                    "num_ctx": 8192,  # 增加上下文长度
+                    "temperature": 0.1,
+                    "top_p": 0.1,  # 稍微增加一点创造性
+                    "repetition_penalty": 1.05,
+                    "stop": ["<|im_end|>", "<|im_start|>"]  # 设置停止词
+                }
+            }
+            
+            logger.info("调用Ollama API...")
+            
+            response = requests.post(url, json=data, timeout=180)  # 增加超时时间
+            response.raise_for_status()
+            
+            result_data = response.json()
+            result = result_data.get('response', '')
+            
+            logger.info("Ollama API调用成功")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ollama API调用失败: {e}")
+            return None
+    
+    def analyze_text_stage1(self, text: str) -> Optional[Dict]:
+        """英文分析阶段1：基本信息提取"""
+        logger.info("开始英文分析阶段1")
+        
+        system_prompt = """You are an expert at extracting academic and research position information from text. You need to analyze the provided text and extract specific information in JSON format. 
+
+IMPORTANT: Respond ONLY with the JSON object. Do not include any explanation, reasoning, or additional text. Just return the pure JSON response."""
+        
+        prompt = f"""
+TEXT TO ANALYZE:
+{text}
+
+EXTRACTION INSTRUCTIONS:
+CRITICAL RULE: 
+- You MUST ONLY extract information that is EXPLICITLY stated in the provided text. 
+- If information is not found, use the specified default values.
+- You MUST return a COMPLETE JSON object with ALL required fields.
+
+1. "Deadline": Extract ONLY the application deadline that is explicitly mentioned in the text. Convert to YYYY-MM-DD format. If NO deadline is mentioned, use "Soon".
+2. "Number_Places": Extract ONLY the number of positions that is explicitly stated. For academic positions (Master, PhD, PostDoc, Research Assistant), specify the exact number if mentioned. If there are multiple positions, the number should be added up. If NOT specified, fill in "1". For events (Competition, Summer School, Conference, Workshop), leave empty.
+3. "Direction": Extract ONLY the research direction or project topic that is stated in the text. If not explicitly stated, summarize ONLY from the actual content provided. Please make sure that the first letter of the first word and special nouns are capitalized, and the others are lowercase.For example, “PhD Position: Using AI for Pandemic Preparedness and Building Resilient Healthcare Systems (PARAATHEID)” should be converted to “Using AI for pandemic preparedness and building resilient healthcare systems”.
+4. "University_EN": Extract ONLY the full English name of the university/institution that is EXPLICITLY mentioned. If the abbreviation of the school/institution is used in the text, use it after completing it. If not specified or uncertain, leave empty.
+5. "Contact_Name": Extract ONLY the contact person's name that is EXPLICITLY provided in the text (usually the project leader, proposer, or professor, etc.). If multiple contacts, choose the first one. If NO contact is provided, use "-". If the contact has a title (such as professor, Prof., doctor, Dr., etc.), add the prefix “Dr.” to their name.
+6. "Contact_Email": Extract ONLY the email address that is EXPLICITLY provided in the text. DO NOT create, guess, or construct email addresses. If NO email is provided, use "-".
+
+REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
+{{
+  "Deadline": "2024-03-15",
+  "Number_Places": "3",
+  "Direction": "Machine learning for environmental monitoring",
+  "University_EN": "University of Cambridge",
+  "Contact_Name": "Dr. John Smith",
+  "Contact_Email": "j.smith@cam.ac.uk"
+}}
+
+IMPORTANT: Extract actual information from the text above, not the example values.
+"""
+        
+        response = self.call_llm(prompt, system_prompt)
+        if not response:
+            logger.error("LLM返回空响应")
+            return None
+        
+        # 记录对话到历史
+        self._add_to_conversation_history("stage1", prompt, response)
+        
+        result = validate_json_response(response)
+        if result:
+            logger.info("英文分析阶段1完成")
+        else:
+            logger.error("英文分析阶段1结果格式错误")
+        
+        return result
+    
+    def analyze_text_stage2(self, text: str) -> Optional[Dict]:
+        """英文分析阶段2：类型和方向分析"""
+        logger.info("开始英文分析阶段2")
+        
+        system_prompt = """You are an expert at categorizing academic positions and research fields. Analyze the text and identify relevant categories.
+
+IMPORTANT: Respond ONLY with the JSON object. Do not include any explanation, reasoning, or additional text. Just return the pure JSON response."""
+        
+        prompt = f"""
+TEXT TO ANALYZE:
+{text}
+
+CATEGORIZATION INSTRUCTIONS:
+CRITICAL RULE: 
+- You MUST ONLY categorize based on information that is stated in the provided text. 
+- If the text content does not indicate anything related to any categories, use the specified default values.
+- You MUST return a COMPLETE JSON object with ALL required fields.
+
+Position Types (mark "1" if mentioned, otherwise leave empty):
+- "Master Student": Master's degree students
+- "Doctoral Student": Doctoral's degree students (PhD students)  
+- "PostDoc": Postdoctoral researchers (If a research assistant position also requires the candidate to have a PhD degree, then this category counts as a postdoctoral)
+- "Research Assistant": Research assistants
+- "Competition": Competitions
+- "Summer School": Summer schools
+- "Conference": Academic conferences
+- "Workshop": Workshops
+
+Research Fields (mark "1" if the text content is related to the following categories, otherwise leave empty. Maximum fill 3 fields, minimum fill 1 field.):
+- "Physical_Geo": Physical Geography, Agriculture, Environmental Sciences, Climatology, etc.
+- "Human_Geo": Human Geography, Health Geography, Economic Geography, Demography, etc.
+- "Urban": Urban Planning, Smart City, Land Use, Architecture, etc.
+- "GIS": Geographic Information Systems/Science, Spatial Analysis, etc.
+- "RS": Remote Sensing，Unmanned Aerial Vehicle (Drone), etc.
+- "GNSS": Global Navigation Satellite Systems，Surveying and Mapping, etc.
+
+REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
+{{
+  "Master Student": "1",
+  "Doctoral Student": "1",
+  "PostDoc": "1",
+  "Research Assistant": "1",
+  "Competition": "1",
+  "Summer School": "1",
+  "Conference": "1",
+  "Workshop": "1",
+  "Physical_Geo": "1",
+  "Human_Geo": "1",
+  "Urban": "1",
+  "GIS": "1",
+  "RS": "1",
+  "GNSS": "1"
+}}
+
+IMPORTANT: Analyze the actual text content to determine which categories apply, not the example values.
+"""
+        
+        response = self.call_llm(prompt, system_prompt)
+        if not response:
+            logger.error("LLM返回空响应")
+            return None
+        
+        # 记录对话到历史
+        self._add_to_conversation_history("stage2", prompt, response)
+        
+        result = validate_json_response(response)
+        if result:
+            logger.info("英文分析阶段2完成")
+        else:
+            logger.error("英文分析阶段2结果格式错误")
+        
+        return result
+    
+    def analyze_text_stage3(self, text: str) -> Optional[Dict]:
+        """中文分析阶段：中文字段提取"""
+        logger.info("开始中文分析阶段")
+        
+        system_prompt = """你是一个专业的学术信息提取专家。请分析提供的文本，并用标准简体中文提取所需信息。
+
+重要说明：只需要返回JSON对象，不要包含任何解释、推理过程或其他文本。只返回纯JSON格式的回答。"""
+        
+        prompt = f"""
+要分析的文本：
+{text}
+
+提取指令：
+关键规则：
+- 您只能提取文本中提到的信息。如果找不到信息或不能确定，请留空。
+- 任何输出内容都必须使用标准的简体中文汉字填写，不得包含繁体字、英文字母、数字或特殊符号。
+- 您必须返回一个包含所有字段的完整JSON对象。
+
+1. "University_CN": 仅提取文本中提到该项目所属的大学/机构的中文全称(如有多个大写/机构，则仅选择最主要的)。
+2. "Country_CN": 仅提取文本中提到的大学/机构所在国家的中文名称。
+3. "WX_Label1": 从文本中提到的相关专业学科中选择最符合的。
+4. "WX_Label2": 其他相关专业学科或研究方向。
+5. "WX_Label3": 其他相关专业学科或研究方向。
+6. "WX_Label4": 其他相关研究方向。
+7. "WX_Label5": 其他相关研究方向。
+
+注意：
+- WX_Label1必须填写
+- WX_Label2、WX_Label3、WX_Label4和WX_Label5可以填写但不是必需的
+- 不能填写"自然地理学"、"人文地理学"、"地理信息科学"、"地理信息系统"、"城市规划"、"遥感"、"卫星导航系统"
+- WX_Label1应该填写具体的专业学科名称，比如："生态学"、"地质学"、"环境科学"等
+- WX_Label2、WX_Label3、WX_Label4和WX_Label5应该填写具体的研究方向名称，比如："风力发电"、"空间分析"、"深度学习"等
+- 在WX_Label1-5中所有填写的单个内容不得超过6个字
+
+要求的JSON格式（仅为示例，请勿复制示例数值）：
+{{
+  "University_CN": "剑桥大学",
+  "Country_CN": "英国",
+  "WX_Label1": "数据科学",
+  "WX_Label2": "环境监测",
+  "WX_Label3": "机器学习",
+  "WX_Label4": "统计分析",
+  "WX_Label5": "算法优化"
+}}
+
+重要提醒：请从上述文本中提取真实信息，而不是使用示例中的值。
+"""
+        
+        response = self.call_llm(prompt, system_prompt)
+        if not response:
+            logger.error("LLM返回空响应")
+            return None
+        
+        # 记录对话到历史
+        self._add_to_conversation_history("stage3", prompt, response)
+        
+        result = validate_json_response(response)
+        if result:
+            logger.info("中文分析阶段完成")
+        else:
+            logger.error("中文分析阶段结果格式错误")
+        
+        return result
+    
+    def _add_to_conversation_history(self, stage: str, prompt: str, response: str):
+        """添加对话到历史记录"""
+        conversation = {
+            "stage": stage,
+            "timestamp": time.time(),
+            "prompt": prompt,
+            "response": response,
+            "model": OPENAI_MODEL if self.use_openai else OLLAMA_MODEL
+        }
+        self.conversation_history.append(conversation)
+        logger.info(f"已记录{stage}阶段对话")
+    
+    def save_conversation_log(self, row_index: int):
+        """保存对话记录"""
+        # 检查是否已经保存过
+        if self.conversation_saved:
+            logger.info(f"行 {row_index} 的对话记录已经保存过，跳过重复保存")
+            return
+        
+        if self.conversation_history:
+            save_llm_conversation(row_index, self.conversation_history)
+            logger.info(f"已保存行{row_index}的{len(self.conversation_history)}条对话记录")
+            # 标记为已保存
+            self.conversation_saved = True
+            # 清空对话历史，为下一行处理准备
+            self.conversation_history = []
+        else:
+            logger.warning(f"行 {row_index} 没有对话记录可保存")
+    
+    def get_model_info(self) -> Dict[str, Any]:
+        """获取当前使用的模型信息"""
+        return {
+            "use_openai": self.use_openai,
+            "model": OPENAI_MODEL if self.use_openai else OLLAMA_MODEL,
+            "api_url": OPENAI_BASE_URL if self.use_openai else OLLAMA_BASE_URL
+        }
+
+def test_llm_agent():
+    """测试LLM代理功能"""
+    try:
+        agent = LLMAgent()
+        
+        # 测试文本
+        test_text = """
+        PhD Position in Remote Sensing and Environmental Monitoring
+        University of Technology, Netherlands
+        
+        We are seeking a highly motivated PhD student to join our research team working on satellite-based environmental monitoring. The position involves developing machine learning algorithms for analyzing remote sensing data to monitor forest changes and carbon sequestration.
+        
+        Application deadline: March 15, 2024
+        Duration: 4 years
+        Contact: Dr. John Smith (j.smith@uni.nl)
+        """
+        
+        logger.info("测试LLM分析功能...")
+        
+        # 测试三个分析阶段
+        logger.info("\n=== 测试阶段1 ===")
+        result1 = agent.analyze_text_stage1(test_text)
+        if result1:
+            logger.info(f"阶段1结果: {json.dumps(result1, ensure_ascii=False, indent=2)}")
+        
+        agent.reset_context()
+        
+        logger.info("\n=== 测试阶段2 ===")
+        result2 = agent.analyze_text_stage2(test_text)
+        if result2:
+            logger.info(f"阶段2结果: {json.dumps(result2, ensure_ascii=False, indent=2)}")
+        
+        agent.reset_context()
+        
+        logger.info("\n=== 测试阶段3 ===")
+        result3 = agent.analyze_text_stage3(test_text)
+        if result3:
+            logger.info(f"阶段3结果: {json.dumps(result3, ensure_ascii=False, indent=2)}")
+        
+        # 保存测试对话记录
+        agent.save_conversation_log(9999)  # 测试行号
+        
+        logger.info("\nLLM代理测试完成")
+        
+    except Exception as e:
+        logger.error(f"LLM代理测试失败: {e}")
+
+if __name__ == "__main__":
+    # 设置日志
+    logging.basicConfig(level=logging.INFO)
+    test_llm_agent() 
