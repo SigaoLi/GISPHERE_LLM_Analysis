@@ -185,12 +185,40 @@ CRITICAL RULE:
 - If information is not found, use the specified default values.
 - You MUST return a COMPLETE JSON object with ALL required fields.
 
-1. "Deadline": Extract ONLY the application deadline that is explicitly mentioned in the text. Convert to YYYY-MM-DD format. If NO deadline is mentioned, use "Soon".
-2. "Number_Places": Extract ONLY the number of positions that is explicitly stated. For academic positions (Master, PhD, PostDoc, Research Assistant), specify the exact number if mentioned. If there are multiple positions, the number should be added up. If NOT specified, fill in "1". For events (Competition, Summer School, Conference, Workshop), leave empty.
+1. "Deadline": Extract ONLY the "application deadline" that is explicitly mentioned in the text. Convert to YYYY-MM-DD format. If deadline is not mentioned, use "Soon".
+2. "Number_Places": Extract ONLY the number of positions that is explicitly stated. For academic positions (Master, PhD, PostDoc, Research Assistant), specify the exact number if mentioned. If there are multiple positions, the number should be added up. If not specified, should fill in "1". For events (Competition, Summer School, Conference, Workshop), leave empty.
 3. "Direction": Extract ONLY the research direction or project topic that is stated in the text. If not explicitly stated, summarize ONLY from the actual content provided. Please make sure that the first letter of the first word and special nouns are capitalized, and the others are lowercase.For example, “PhD Position: Using AI for Pandemic Preparedness and Building Resilient Healthcare Systems (PARAATHEID)” should be converted to “Using AI for pandemic preparedness and building resilient healthcare systems”.
 4. "University_EN": Extract ONLY the full English name of the university/institution that is EXPLICITLY mentioned. If the abbreviation of the school/institution is used in the text, use it after completing it. If not specified or uncertain, leave empty.
-5. "Contact_Name": Extract ONLY the contact person's name that is EXPLICITLY provided in the text (usually the project leader, proposer, or professor, etc.). If multiple contacts, choose the first one. If NO contact is provided, use "-". If the contact has a title (such as professor, Prof., doctor, Dr., etc.), add the prefix “Dr.” to their name.
+5. "Contact_Name": Extract ONLY the contact person's name that is EXPLICITLY provided in the text (usually the project leader, proposer, or professor, etc.). If multiple contacts, choose the first one. If NO contact is provided, use "-".
+   CRITICAL FORMATTING RULES:
+   - ONLY use these exact prefixes: "Dr. ", "Mr. ", "Ms. " or NO prefix at all
+   - NEVER use: "Prof.", "Professor", "Assistant Professor", "Associate Professor", etc.
+   - NEVER include suffixes like "Ph.D.", "PhD", "Professor" after the name
+   - NEVER include nicknames in quotes like "Jerry"
+   - NEVER include academic degrees or titles after the name
+   - IMPORTANT: If the text mentions the person is a Professor, Assistant Professor, Associate Professor, Dr., Doctor, or has a PhD/Ph.D. degree, you MUST add "Dr. " prefix
+   - Examples of applying "Dr." prefix:
+     * "Professor John Smith" → "Dr. John Smith"
+     * "Prof. John Smith" → "Dr. John Smith"
+     * "Assistant Professor Jane Doe" → "Dr. Jane Doe"
+     * "Associate Professor Michael Brown" → "Dr. Michael Brown"
+     * "John Smith, Ph.D." → "Dr. John Smith"
+     * "John Smith, PhD" → "Dr. John Smith"
+     * "Dr. Sarah Johnson" → "Dr. Sarah Johnson"
+     * "Doctor Tom Wilson" → "Dr. Tom Wilson"
+   - If uncertain about title and no doctorate/professor information is mentioned, extract only the clean name: "John Smith"
+   - Clean format examples: "Dr. John Smith", "Mr. John Smith", "Ms. Sarah Johnson", "John Smith"
 6. "Contact_Email": Extract ONLY the email address that is EXPLICITLY provided in the text. DO NOT create, guess, or construct email addresses. If NO email is provided, use "-".
+   CRITICAL EMAIL FORMATTING RULES:
+   - If the text uses "[at]", "(at)", " at ", or similar variations instead of "@", you MUST convert them to "@"
+   - If the text uses "[dot]", "(dot)", or similar variations instead of ".", you MUST convert them to "."
+   - Examples of email format conversion:
+     * "yichun.fan[at]duke.edu" → "yichun.fan@duke.edu"
+     * "john.smith(at)university.edu" → "john.smith@university.edu"
+     * "contact at example.com" → "contact@example.com"
+     * "user[at]domain[dot]com" → "user@domain.com"
+     * "name (at) school (dot) edu" → "name@school.edu"
+   - Always output the email in standard format with "@" and "." symbols
 
 REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
 {{
@@ -211,7 +239,7 @@ IMPORTANT: Extract actual information from the text above, not the example value
             return None
         
         # 记录对话到历史
-        self._add_to_conversation_history("stage1", prompt, response)
+        self._add_to_conversation_history("stage1", prompt, response, text)
         
         result = validate_json_response(response)
         if result:
@@ -250,12 +278,12 @@ Position Types (mark "1" if mentioned, otherwise leave empty):
 - "Workshop": Workshops
 
 Research Fields (mark "1" if the text content is related to the following categories, otherwise leave empty. Maximum fill 3 fields, minimum fill 1 field.):
-- "Physical_Geo": Physical Geography, Agriculture, Environmental Sciences, Climatology, etc.
-- "Human_Geo": Human Geography, Health Geography, Economic Geography, Demography, etc.
-- "Urban": Urban Planning, Smart City, Land Use, Architecture, etc.
-- "GIS": Geographic Information Systems/Science, Spatial Analysis, etc.
-- "RS": Remote Sensing，Unmanned Aerial Vehicle (Drone), etc.
-- "GNSS": Global Navigation Satellite Systems，Surveying and Mapping, etc.
+- "Physical_Geo": Physical Geography, Agriculture, Environmental Sciences, Climatology, Ecology, Geology, Earth Sciences, Hydrology, Biodiversity, Landscape Ecology, Climate Change, Soil Science, Natural Hazards, Geomorphology, Oceanography, Atmospheric Sciences, etc.
+- "Human_Geo": Human Geography, Health Geography, Economic Geography, Demography, Medical Geography, Social Geography, Cultural Geography, Political Geography, Population Studies, Migration Studies, Tourism Geography, Behavioral Geography, Development Studies, Regional Studies, etc.
+- "Urban": Urban Planning, Smart City, Land Use, Architecture, Sustainable Cities, Urban Design, Urban Development, City Planning, Metropolitan Studies, Urban Transportation, Urban Environment, Urban Policy, Housing Studies, Infrastructure Planning, Urban Analytics, Urban Modeling, etc.
+- "GIS": Geographic Information Systems/Science, Spatial Analysis, Spatial Data Science, Geospatial Technology, Cartography, Spatial Statistics, Location Intelligence, Spatial Modeling, Geodatabases, Web GIS, Spatial Data Mining, Geovisualization, Spatial Decision Support Systems, Geoinformatics, Location Analytics, Epidemiology (when involving spatial analysis), Disease Mapping, etc.
+- "RS": Remote Sensing, Satellite Imagery, Unmanned Aerial Vehicle (Drone), Earth Observation, Image Processing, Multispectral Analysis, Hyperspectral Analysis, Radar Imaging, LiDAR, Aerial Photography, Satellite Data Analysis, Change Detection, Land Cover Classification, Digital Image Processing, etc.
+- "GNSS": Global Navigation Satellite Systems, GPS, Surveying and Mapping, Geodesy, Precision Positioning, Navigation Systems, Satellite Navigation, Location Services, Geolocation Technology, Positioning Systems, etc.
 
 REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
 {{
@@ -284,7 +312,7 @@ IMPORTANT: Analyze the actual text content to determine which categories apply, 
             return None
         
         # 记录对话到历史
-        self._add_to_conversation_history("stage2", prompt, response)
+        self._add_to_conversation_history("stage2", prompt, response, text)
         
         result = validate_json_response(response)
         if result:
@@ -316,16 +344,16 @@ IMPORTANT: Analyze the actual text content to determine which categories apply, 
 2. "Country_CN": 仅提取文本中提到的大学/机构所在国家的中文名称。
 3. "WX_Label1": 从文本中提到的相关专业学科中选择最符合的。
 4. "WX_Label2": 其他相关专业学科或研究方向。
-5. "WX_Label3": 其他相关专业学科或研究方向。
-6. "WX_Label4": 其他相关研究方向。
-7. "WX_Label5": 其他相关研究方向。
+5. "WX_Label3": 其他相关研究方向。
+6. "WX_Label4": 留空。
+7. "WX_Label5": 留空。
 
 注意：
 - WX_Label1必须填写
-- WX_Label2、WX_Label3、WX_Label4和WX_Label5可以填写但不是必需的
+- WX_Label3可以填写但不是必需的
 - 不能填写"自然地理学"、"人文地理学"、"地理信息科学"、"地理信息系统"、"城市规划"、"遥感"、"卫星导航系统"
 - WX_Label1应该填写具体的专业学科名称，比如："生态学"、"地质学"、"环境科学"等
-- WX_Label2、WX_Label3、WX_Label4和WX_Label5应该填写具体的研究方向名称，比如："风力发电"、"空间分析"、"深度学习"等
+- WX_Label2、WX_Label3应该填写具体的研究方向名称，比如："风力发电"、"空间分析"、"深度学习"等
 - 在WX_Label1-5中所有填写的单个内容不得超过6个字
 
 要求的JSON格式（仅为示例，请勿复制示例数值）：
@@ -348,7 +376,7 @@ IMPORTANT: Analyze the actual text content to determine which categories apply, 
             return None
         
         # 记录对话到历史
-        self._add_to_conversation_history("stage3", prompt, response)
+        self._add_to_conversation_history("stage3", prompt, response, text)
         
         result = validate_json_response(response)
         if result:
@@ -358,13 +386,14 @@ IMPORTANT: Analyze the actual text content to determine which categories apply, 
         
         return result
     
-    def _add_to_conversation_history(self, stage: str, prompt: str, response: str):
+    def _add_to_conversation_history(self, stage: str, prompt: str, response: str, original_text: str = None):
         """添加对话到历史记录"""
         conversation = {
             "stage": stage,
             "timestamp": time.time(),
             "prompt": prompt,
             "response": response,
+            "original_text": original_text,  # 添加原始文本内容
             "model": OPENAI_MODEL if self.use_openai else OLLAMA_MODEL
         }
         self.conversation_history.append(conversation)

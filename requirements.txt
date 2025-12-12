@@ -17,4 +17,6 @@ Pillow>=10.0.0
 google-api-python-client>=2.0.0
 google-auth-httplib2>=0.1.0
 google-auth-oauthlib>=0.5.0
-inflect>=6.0.0 
+inflect>=6.0.0
+# 联系人验证功能依赖
+playwright>=1.40.0 

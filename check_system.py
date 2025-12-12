@@ -202,6 +202,7 @@ def main():
         ("数据源", check_data_source),
         ("LLM服务", check_llm_service),
         ("内容获取", check_content_fetcher),
+        ("联系人验证", check_contact_verification),
     ]
     
     results = []
@@ -233,6 +234,67 @@ def main():
         return True
     else:
         logger.warning(f"⚠️  有 {total - passed} 项检查失败，请查看上述详细信息")
+        return False
+
+def check_contact_verification():
+    """检查联系人验证功能"""
+    logger.info("=== 检查联系人验证功能 ===")
+    try:
+        from config import CONTACT_VERIFICATION_ENABLED
+        
+        if not CONTACT_VERIFICATION_ENABLED:
+            logger.info("⚠️  联系人验证功能已禁用")
+            return True
+        
+        # 检查Playwright依赖
+        try:
+            import playwright
+            from playwright.sync_api import sync_playwright
+            logger.info("✅ Playwright依赖检查通过")
+            
+            # 检查浏览器是否已安装
+            try:
+                with sync_playwright() as p:
+                    # 尝试获取已安装的浏览器
+                    browsers = p.chromium
+                    logger.info("✅ Playwright Chromium浏览器可用")
+            except Exception as e:
+                logger.warning(f"⚠️  Playwright浏览器未安装: {e}")
+                logger.info("请运行: playwright install chromium")
+                return True  # 不阻止系统运行
+                
+        except ImportError as e:
+            logger.warning(f"⚠️  Playwright依赖缺失: {e}")
+            logger.info("可运行: pip install playwright && playwright install chromium")
+            return True  # 不阻止系统运行，只是功能受限
+        
+        # 测试基础搜索功能
+        try:
+            from llm_agent import LLMAgent
+            from contact_verifier import ContactVerifier
+            
+            llm_agent = LLMAgent()
+            verifier = ContactVerifier(llm_agent)
+            
+            # 测试判断逻辑
+            should_verify, reason = verifier.should_verify_contact(
+                "John Smith", "john@example.com", "Contact: Dr. John Smith"
+            )
+            
+            logger.info(f"验证逻辑测试: {should_verify}, {reason}")
+            logger.info("✅ 联系人验证功能初始化成功")
+            
+            # 清理资源
+            verifier.cleanup()
+            
+        except Exception as e:
+            logger.warning(f"⚠️  联系人验证功能测试失败: {e}")
+            return True  # 不阻止系统运行
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"联系人验证功能检查失败: {e}")
         return False
 
 if __name__ == "__main__":

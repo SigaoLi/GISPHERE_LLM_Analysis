@@ -179,8 +179,8 @@ class ExcelHandler:
                 else:
                     logger.warning(f"列不存在: {column}")
             
-            # 设置验证人
-            if 'Verifier' in self.df.columns:
+            # 设置验证人（只有verifier不为空时才设置）
+            if 'Verifier' in self.df.columns and verifier:
                 if self.df['Verifier'].dtype in ['float64', 'int64']:
                     self.df['Verifier'] = self.df['Verifier'].astype('object')
                 self.df.loc[row_index, 'Verifier'] = verifier
@@ -213,6 +213,44 @@ class ExcelHandler:
             
         except Exception as e:
             logger.error(f"更新错误信息失败: {e}")
+            return False
+    
+    def update_row_data_with_error(self, row_index: int, update_data: Dict, error_message: str = "", verifier: str = "") -> bool:
+        """
+        同时更新行数据和错误信息（用于部分成功的情况）
+        
+        Args:
+            row_index: 行索引
+            update_data: 要更新的数据字典
+            error_message: 错误信息（如果有）
+            verifier: 验证人标识，如果为空字符串则不设置Verifier字段
+        """
+        if self.use_google_sheets and self.google_handler:
+            # 对于Google Sheets，分别调用两个更新方法
+            result_success = self.google_handler.update_row_data(row_index, update_data, verifier)
+            if error_message:
+                error_success = self.google_handler.update_row_error(row_index, error_message)
+                return result_success and error_success
+            return result_success
+        
+        try:
+            # 先更新结果数据（只有verifier不为空时才设置Verifier字段）
+            if not self.update_row_data(row_index, update_data, verifier):
+                return False
+            
+            # 然后更新错误信息（如果有）
+            if error_message:
+                if not self.update_row_error(row_index, error_message):
+                    logger.warning(f"结果数据更新成功，但错误信息更新失败：行 {row_index}")
+                    # 即使错误信息更新失败，我们仍然认为整体操作成功
+                    # 因为结果数据已经保存了
+            
+            verifier_status = f"Verifier={'LLM' if verifier else '未设置'}"
+            logger.info(f"行 {row_index} 数据更新完成（{verifier_status}{'，含错误信息' if error_message else ''}）")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新行数据和错误信息失败: {e}")
             return False
     
     def save_data(self) -> bool:

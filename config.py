@@ -28,8 +28,20 @@ LOG_DIR = PROJECT_ROOT / "logs"
 LLM_LOG_DIR = PROJECT_ROOT / "llm_logs"
 RUN_LOG_FILE = LOG_DIR / "run.log"
 
+# 滚动加载配置
+SCROLL_STEP = 500  # 每次滚动的像素数
+SCROLL_DELAY = 1000  # 每次滚动后的等待时间（毫秒）
+MAX_SCROLLS = 50  # 最大滚动次数
+NO_NEW_CONTENT_THRESHOLD = 3  # 连续无新内容次数阈值
+SCROLL_BUFFER = 1000  # 页面底部缓冲像素数
+
+# Playwright配置
+USE_PLAYWRIGHT = True  # 是否使用Playwright（通过独立进程，无异步冲突）
+PLAYWRIGHT_TIMEOUT = 60  # Playwright页面加载超时时间（秒）
+PLAYWRIGHT_SCROLL_ENABLED = True  # 是否启用滚动加载
+
 # LLM 配置
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-5-chat-latest"
 OPENAI_BASE_URL = "https://oneapi.gisphere.info/v1"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "qwen3:14b"
@@ -84,6 +96,12 @@ EXCEL_COLUMNS = {
 REQUEST_TIMEOUT = 30
 MAX_RETRIES = 3
 PDF_DOWNLOAD_TIMEOUT = 60
+
+# 联系人验证配置
+CONTACT_VERIFICATION_ENABLED = True
+CONTACT_SEARCH_TIMEOUT = 20
+MAX_SEARCH_RESULTS = 10
+MAX_PAGES_TO_ANALYZE = 3
 
 # 日志配置
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

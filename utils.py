@@ -133,6 +133,7 @@ def save_llm_conversation(row_index, conversation_data):
                 timestamp = conv.get('timestamp', 0)
                 prompt = conv.get('prompt', '')
                 response = conv.get('response', '')
+                original_text = conv.get('original_text', '')
                 
                 # 格式化时间戳
                 if timestamp:
@@ -142,6 +143,14 @@ def save_llm_conversation(row_index, conversation_data):
                 
                 f.write(f"阶段: {stage} | 模型: {model} | 时间: {time_str}\n")
                 f.write("-" * 80 + "\n")
+                
+                # 添加原始文本内容部分
+                if original_text:
+                    f.write("原始文本内容:\n")
+                    f.write("-" * 40 + "\n")
+                    f.write(original_text + "\n\n")
+                    f.write("-" * 40 + "\n")
+                
                 f.write("输入提示词:\n")
                 f.write(prompt + "\n\n")
                 f.write("模型响应:\n")
@@ -253,6 +262,61 @@ def check_ollama_availability():
     except Exception as e:
         logger.warning(f"Ollama连接失败: {e}")
         return False
+
+def clean_email_format(email):
+    """
+    清理邮箱格式，将常见的混淆写法转换为标准格式
+    
+    Args:
+        email: 原始邮箱字符串
+        
+    Returns:
+        str: 清理后的标准邮箱格式
+        
+    Examples:
+        "yichun.fan[at]duke.edu" -> "yichun.fan@duke.edu"
+        "contact(at)example.com" -> "contact@example.com"
+        "user [at] domain [dot] com" -> "user@domain.com"
+    """
+    if not email or email.strip() in ['-', '', 'N/A']:
+        return email
+    
+    # 转换为小写并去除首尾空格
+    cleaned = email.strip().lower()
+    
+    # 替换 [at], (at), " at " 等为 @
+    at_patterns = [
+        r'\[at\]',
+        r'\(at\)',
+        r'\s+at\s+',
+        r'\s+AT\s+',
+        r'\[AT\]',
+        r'\(AT\)',
+    ]
+    for pattern in at_patterns:
+        cleaned = re.sub(pattern, '@', cleaned, flags=re.IGNORECASE)
+    
+    # 替换 [dot], (dot), " dot " 等为 .
+    dot_patterns = [
+        r'\[dot\]',
+        r'\(dot\)',
+        r'\s+dot\s+',
+        r'\s+DOT\s+',
+        r'\[DOT\]',
+        r'\(DOT\)',
+    ]
+    for pattern in dot_patterns:
+        cleaned = re.sub(pattern, '.', cleaned, flags=re.IGNORECASE)
+    
+    # 移除多余的空格
+    cleaned = re.sub(r'\s+', '', cleaned)
+    
+    # 验证是否看起来像邮箱（基本格式检查）
+    if '@' in cleaned and '.' in cleaned.split('@')[-1]:
+        return cleaned
+    else:
+        # 如果清理后不像邮箱，返回原始值
+        return email
 
 def normalize_text(text):
     """标准化文本，移除多余空白和特殊字符"""

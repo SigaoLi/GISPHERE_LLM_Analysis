@@ -125,6 +125,9 @@ class LLMAnalysisSystem:
             # 显示最终统计
             self._print_final_statistics()
             
+            # 清理资源
+            self._cleanup_resources()
+            
             logger.info("=" * 60)
             logger.info("处理完成！")
             
@@ -138,7 +141,17 @@ class LLMAnalysisSystem:
         except Exception as e:
             logger.error(f"处理过程发生异常: {e}")
             self.excel_handler.save_data()
+            self._cleanup_resources()
             return False
+    
+    def _cleanup_resources(self):
+        """清理系统资源"""
+        try:
+            if hasattr(self, 'analysis_manager') and self.analysis_manager:
+                self.analysis_manager.cleanup()
+                logger.info("分析管理器资源已清理")
+        except Exception as e:
+            logger.warning(f"清理资源失败: {e}")
     
     def _process_single_row(self, row_index: int) -> bool:
         """处理单行数据"""
@@ -176,31 +189,38 @@ class LLMAnalysisSystem:
             
             # 4. 分析内容
             logger.info("开始LLM分析...")
-            success, results, error_msg = self.analysis_manager.analyze_text_complete(content, row_index)
+            has_results, results, error_msg = self.analysis_manager.analyze_text_complete(content, row_index)
             
-            if not success:
-                logger.error(f"分析失败: {error_msg}")
+            # 处理分析结果
+            if has_results:
+                # 有结果（完全成功或部分成功）
+                logger.info(f"分析获得结果，更新数据...")
+                
+                # 5. 根据是否有错误决定Verifier字段
+                verifier = "LLM" if not error_msg else ""  # 只有完全成功才设置Verifier为LLM
+                
+                # 同时更新结果和错误信息（如果有）
+                update_success = self.excel_handler.update_row_data_with_error(row_index, results, error_msg, verifier)
+                if not update_success:
+                    final_error_msg = f"结果更新失败{'; ' + error_msg if error_msg else ''}"
+                    logger.error("结果更新失败")
+                    self.excel_handler.update_row_error(row_index, final_error_msg)
+                    # 如果处理的是PDF文件，删除缓存的PDF文件
+                    self.content_fetcher.delete_current_pdf()
+                    return False
+                
+                if error_msg:
+                    logger.info(f"第 {row_index} 行部分成功（Verifier未设置，Error列记录失败信息）")
+                else:
+                    logger.info(f"第 {row_index} 行完全成功（Verifier设置为LLM）")
+                
+            else:
+                # 没有任何结果（完全失败）
+                logger.error(f"分析完全失败: {error_msg}")
                 self.excel_handler.update_row_error(row_index, error_msg)
                 # 如果处理的是PDF文件，删除缓存的PDF文件
                 self.content_fetcher.delete_current_pdf()
                 return False
-            
-            # 5. 更新结果
-            success = self.excel_handler.update_row_data(row_index, results)
-            if not success:
-                error_msg = "结果更新失败"
-                logger.error(error_msg)
-                self.excel_handler.update_row_error(row_index, error_msg)
-                # 如果处理的是PDF文件，删除缓存的PDF文件
-                self.content_fetcher.delete_current_pdf()
-                # 即使更新失败也尝试保存对话记录（如果有的话）
-                try:
-                    self.analysis_manager.llm_agent.save_conversation_log(row_index)
-                except Exception as save_error:
-                    logger.warning(f"保存对话记录失败: {save_error}")
-                return False
-            
-            logger.info(f"第 {row_index} 行处理成功")
             
             # 6. 处理成功后，删除缓存的PDF文件
             self.content_fetcher.delete_current_pdf()

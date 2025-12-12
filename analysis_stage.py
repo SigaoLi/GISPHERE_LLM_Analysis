@@ -5,24 +5,28 @@ import logging
 from typing import Dict, Optional, Tuple
 from llm_agent import LLMAgent
 from excel_handler import validate_analysis_result
+from contact_verifier import ContactVerifier
+from utils import clean_email_format
 
 logger = logging.getLogger(__name__)
 
 class AnalysisStageManager:
     def __init__(self):
         self.llm_agent = LLMAgent()
+        self.contact_verifier = ContactVerifier(self.llm_agent)
         self.current_row_index = None
         
     def analyze_text_complete(self, text: str, row_index: int) -> Tuple[bool, Dict, str]:
         """
         完整的三阶段文本分析
+        现在支持部分成功：即使某个阶段失败，也会继续执行后续阶段并保存已完成的结果
         
         Args:
             text: 待分析的文本内容
             row_index: 当前处理的行索引
             
         Returns:
-            Tuple[bool, Dict, str]: (是否成功, 结果字典, 错误信息)
+            Tuple[bool, Dict, str]: (是否完全成功, 结果字典(包含部分结果), 错误信息)
         """
         self.current_row_index = row_index
         logger.info(f"开始对行 {row_index} 进行三阶段分析")
@@ -33,40 +37,73 @@ class AnalysisStageManager:
         try:
             # 合并所有分析结果
             final_result = {}
+            failed_stages = []
+            completed_stages = []
             
             # 阶段1：英文基本信息提取
+            logger.info("执行阶段1分析...")
             success, stage1_result, error = self._execute_stage1(text)
-            if not success:
-                # 即使失败也保存对话记录
-                self.llm_agent.save_conversation_log(row_index)
-                return False, {}, f"阶段1失败: {error}"
-            final_result.update(stage1_result)
+            if success:
+                final_result.update(stage1_result)
+                completed_stages.append("阶段1(英文基本信息)")
+                logger.info("阶段1分析成功")
+            else:
+                failed_stages.append(f"阶段1失败: {error}")
+                logger.error(f"阶段1分析失败: {error}")
             
             # 阶段2：类型和方向分析
+            logger.info("执行阶段2分析...")
             success, stage2_result, error = self._execute_stage2(text)
-            if not success:
-                # 即使失败也保存对话记录
-                self.llm_agent.save_conversation_log(row_index)
-                return False, {}, f"阶段2失败: {error}"
-            final_result.update(stage2_result)
+            if success:
+                final_result.update(stage2_result)
+                completed_stages.append("阶段2(类型和方向)")
+                logger.info("阶段2分析成功")
+            else:
+                failed_stages.append(f"阶段2失败: {error}")
+                logger.error(f"阶段2分析失败: {error}")
             
             # 阶段3：中文字段提取
+            logger.info("执行阶段3分析...")
             success, stage3_result, error = self._execute_stage3(text)
-            if not success:
-                # 即使失败也保存对话记录
+            if success:
+                final_result.update(stage3_result)
+                completed_stages.append("阶段3(中文信息)")
+                logger.info("阶段3分析成功")
+            else:
+                failed_stages.append(f"阶段3失败: {error}")
+                logger.error(f"阶段3分析失败: {error}")
+            
+            # 后处理：数据格式化和验证（只对已获得的结果进行处理）
+            if final_result:
+                final_result = self._post_process_results(final_result)
+            
+            # 确定最终状态
+            all_success = len(failed_stages) == 0
+            has_partial_results = len(completed_stages) > 0
+            
+            # 构建状态信息
+            if all_success:
+                status_msg = f"行 {row_index} 三阶段分析全部完成"
+                error_msg = ""
+            elif has_partial_results:
+                status_msg = f"行 {row_index} 部分分析完成。已完成: {', '.join(completed_stages)}"
+                error_msg = "; ".join(failed_stages)
+            else:
+                status_msg = f"行 {row_index} 所有阶段分析失败"
+                error_msg = "; ".join(failed_stages)
+            
+            logger.info(status_msg)
+            if error_msg:
+                logger.warning(f"部分阶段失败: {error_msg}")
+            
+            # 总是保存对话记录
+            try:
                 self.llm_agent.save_conversation_log(row_index)
-                return False, {}, f"阶段3失败: {error}"
-            final_result.update(stage3_result)
+            except Exception as save_error:
+                logger.warning(f"保存对话记录失败: {save_error}")
             
-            # 后处理：数据格式化和验证
-            final_result = self._post_process_results(final_result)
-            
-            logger.info(f"行 {row_index} 三阶段分析完成")
-            
-            # 保存对话记录
-            self.llm_agent.save_conversation_log(row_index)
-            
-            return True, final_result, ""
+            # 返回结果：如果有任何成功的结果就返回True和结果，错误信息用于记录到Error列
+            return has_partial_results, final_result, error_msg
             
         except Exception as e:
             error_msg = f"分析过程发生异常: {str(e)}"
@@ -79,14 +116,15 @@ class AnalysisStageManager:
             return False, {}, error_msg
     
     def _execute_stage1(self, text: str) -> Tuple[bool, Dict, str]:
-        """执行阶段1分析"""
-        logger.info("执行英文分析阶段1")
+        """执行阶段1分析（包含联系人验证）"""
+        logger.info("执行英文分析阶段1（含联系人验证）")
         
         try:
             # 重置上下文
             self.llm_agent.reset_context()
             
-            # 调用LLM分析
+            # 步骤1：基本信息提取
+            logger.info("步骤1: 基本信息提取")
             result = self.llm_agent.analyze_text_stage1(text)
             
             if not result:
@@ -96,6 +134,21 @@ class AnalysisStageManager:
             if not validate_analysis_result(result, 'stage1'):
                 return False, {}, "结果格式验证失败"
             
+            logger.info("基本信息提取完成")
+            
+            # 步骤2：联系人验证流程
+            logger.info("步骤2: 联系人验证流程")
+            verification_result = self._execute_contact_verification(
+                result, text
+            )
+            
+            # 更新联系人信息
+            if verification_result:
+                result.update(verification_result)
+                logger.info("联系人验证完成")
+            else:
+                logger.info("联系人验证跳过或失败")
+            
             logger.info("阶段1分析成功")
             return True, result, ""
             
@@ -103,6 +156,63 @@ class AnalysisStageManager:
             error_msg = f"阶段1分析异常: {str(e)}"
             logger.error(error_msg)
             return False, {}, error_msg
+    
+    def _execute_contact_verification(self, stage1_result: Dict, original_text: str) -> Optional[Dict]:
+        """执行联系人验证流程"""
+        try:
+            university_en = stage1_result.get('University_EN', '')
+            contact_name = stage1_result.get('Contact_Name', '')
+            contact_email = stage1_result.get('Contact_Email', '')
+            
+            # 场景3：缺失联系人，无需验证
+            if not contact_name or contact_name.strip() in ['-', '', 'N/A']:
+                logger.info("场景3: 缺失联系人，跳过验证")
+                return None
+            
+            # 执行联系人验证
+            verification_result = self.contact_verifier.verify_and_update_contact(
+                university_en, contact_name, contact_email, original_text
+            )
+            
+            # 构建返回结果
+            updated_fields = {}
+            
+            # 记录验证详情
+            verification_performed = verification_result.get('verification_performed', False)
+            if verification_performed:
+                logger.info(f"验证原因: {verification_result.get('verification_reason', '')}")
+                logger.info(f"验证详情: {verification_result.get('verification_details', '')}")
+            else:
+                logger.info(f"跳过验证: {verification_result.get('verification_reason', '')}")
+            
+            # 更新联系人姓名（只有在验证后有变化时才更新）
+            if verification_result.get('Contact_Name') != contact_name:
+                updated_fields['Contact_Name'] = verification_result['Contact_Name']
+                logger.info(f"联系人姓名已更新: {contact_name} -> {verification_result['Contact_Name']}")
+            # 如果验证被跳过（第一阶段已有Dr.前缀），保持原样，不做任何格式化
+            
+            # 更新联系邮箱（如果验证后有变化）
+            if verification_result.get('Contact_Email') != contact_email:
+                updated_fields['Contact_Email'] = verification_result['Contact_Email']
+                logger.info(f"联系邮箱已更新: {contact_email} -> {verification_result['Contact_Email']}")
+            
+            return updated_fields if updated_fields else None
+            
+        except Exception as e:
+            logger.error(f"联系人验证失败: {e}")
+            return None
+    
+    def cleanup(self):
+        """清理资源"""
+        if hasattr(self, 'contact_verifier') and self.contact_verifier:
+            try:
+                self.contact_verifier.cleanup()
+            except Exception as e:
+                logger.warning(f"清理联系人验证器资源失败: {e}")
+    
+    def __del__(self):
+        """析构函数，确保资源被清理"""
+        self.cleanup()
     
     def _execute_stage2(self, text: str) -> Tuple[bool, Dict, str]:
         """执行阶段2分析"""
@@ -170,10 +280,10 @@ class AnalysisStageManager:
             return False, {}, error_msg
     
     def _post_process_results(self, results: Dict) -> Dict:
-        """后处理分析结果"""
+        """后处理分析结果，现在支持部分结果处理"""
         logger.info("开始后处理分析结果")
         
-        # 确保所有字段都存在
+        # 定义所有可能的字段，但只处理已存在的字段
         all_fields = [
             'Deadline', 'Number_Places', 'Direction', 'University_EN', 'Contact_Name', 'Contact_Email',
             'Master Student', 'Doctoral Student', 'PostDoc', 'Research Assistant', 
@@ -182,15 +292,21 @@ class AnalysisStageManager:
             'University_CN', 'Country_CN', 'WX_Label1', 'WX_Label2', 'WX_Label3', 'WX_Label4', 'WX_Label5'
         ]
         
+        # 只为不存在的必要字段添加空值（保持部分结果的完整性）
+        # 但不强制所有字段都存在，允许部分结果
         for field in all_fields:
             if field not in results:
                 results[field] = ""
         
-        # 数据类型转换和清理
+        # 数据类型转换和清理（只处理已存在的字段）
         results = self._clean_and_convert_data(results)
         
-        # 业务规则验证和修正
-        results = self._apply_business_rules(results)
+        # 业务规则验证和修正（对部分结果进行适当的规则应用）
+        try:
+            results = self._apply_business_rules(results)
+        except Exception as e:
+            logger.warning(f"业务规则应用失败（部分结果可能导致）: {e}")
+            # 对于部分结果，业务规则失败不应该阻止处理
         
         logger.info("结果后处理完成")
         return results
@@ -205,6 +321,14 @@ class AnalysisStageManager:
             if field in results:
                 value = str(results[field]).strip()
                 results[field] = value if value else ""
+        
+        # 特殊处理：清理邮箱格式（将[at]、(at)等转换为@）
+        if 'Contact_Email' in results and results['Contact_Email']:
+            original_email = results['Contact_Email']
+            cleaned_email = clean_email_format(original_email)
+            if cleaned_email != original_email:
+                results['Contact_Email'] = cleaned_email
+                logger.info(f"邮箱格式已清理: {original_email} -> {cleaned_email}")
         
         # 处理Number_Places字段
         if 'Number_Places' in results:

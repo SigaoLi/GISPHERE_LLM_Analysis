@@ -198,13 +198,35 @@ python main.py test
 
 ## 📊 分析流程
 
-### 阶段1：英文基本信息提取
+### 阶段1：英文基本信息提取（含联系人验证）
 - **Deadline**：申请截止日期（YYYY-MM-DD格式或"Soon"）
 - **Number_Places**：招生人数（明确数字或留空）
 - **Direction**：研究方向（保持原始格式）
 - **University_EN**：机构英文全称
-- **Contact_Name**：联系人姓名
-- **Contact_Email**：联系邮箱
+- **Contact_Name**：联系人姓名（🆕 含学位验证）
+- **Contact_Email**：联系邮箱（🆕 含自动补全）
+
+#### 🔍 新功能：联系人智能验证
+阶段1现在包含智能联系人验证流程，通过"University_EN" + "Contact_Name"进行浏览器搜索：
+
+**场景1：已有明确学位标识**
+- 文档明确显示联系人为Dr/Prof时
+- 如有邮箱则跳过验证，如无邮箱则搜索补全
+
+**场景2：学位信息不明确**  
+- 无论是否有邮箱都进行验证
+- 通过搜索确认学位，调整称谓（Dr./Mr./Ms.）
+- 同时补全缺失的邮箱信息
+
+**场景3：缺失联系人**
+- 完全无联系人信息时跳过验证
+
+验证流程会智能选择最相关的页面（个人主页、学校介绍页、学术平台等）进行深度分析。
+
+**技术特性**：
+- 🎭 **Playwright驱动**：更强的反反爬虫能力，模拟真实用户行为
+- 🤖 **英文LLM分析**：专业的英文提示词，提高分析准确性
+- 🔄 **智能回退**：Playwright失败时自动使用基础HTTP请求
 
 ### 阶段2：类型和专业分类
 - **招生类型**：Master Student, Doctoral Student, PostDoc, Research Assistant, Competition, Summer School, Conference, Workshop
@@ -222,6 +244,7 @@ python main.py test
 - **LLM配置**：模型名称、API地址
 - **文件路径**：Excel文件路径、缓存目录
 - **请求配置**：超时时间、重试次数
+- **联系人验证**：启用/禁用验证功能、搜索参数
 - **日志级别**：INFO、DEBUG、WARNING等
 
 ## 🛠️ 常见问题
@@ -348,6 +371,32 @@ A: 可以：
 
 ### 添加新的内容源
 在 `fetch_text.py` 中扩展支持新的文档格式或网站类型。
+
+### 联系人验证功能
+#### 安装和配置
+```bash
+# 安装Playwright依赖
+pip install playwright
+playwright install chromium
+```
+
+#### 功能控制
+在 `config.py` 中可以控制验证功能：
+```python
+CONTACT_VERIFICATION_ENABLED = True  # 启用/禁用验证
+CONTACT_SEARCH_TIMEOUT = 20         # 搜索超时时间
+MAX_SEARCH_RESULTS = 10             # 最大搜索结果数
+MAX_PAGES_TO_ANALYZE = 3            # 最大分析页面数
+```
+
+#### 测试验证功能
+```bash
+# 测试基础验证逻辑
+python test_contact_verification.py
+
+# 测试完整验证流程
+python example_contact_verification.py
+```
 
 ## 📄 许可证
 

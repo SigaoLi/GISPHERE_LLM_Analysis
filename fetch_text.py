@@ -23,11 +23,24 @@ class ContentFetcher:
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
         
         # 确保缓存目录存在
         PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # 尝试初始化Playwright浏览器（用于JavaScript-heavy网站）
+        self.playwright_manager = None
+        try:
+            from config import USE_PLAYWRIGHT
+            if USE_PLAYWRIGHT:
+                from playwright_process_manager import get_playwright_manager
+                self.playwright_manager = get_playwright_manager()
+                logger.info("✅ Playwright进程管理器初始化成功（独立进程，无异步冲突）")
+            else:
+                logger.info("Playwright已在配置中禁用，将使用基础HTTP请求")
+        except Exception as e:
+            logger.warning(f"Playwright进程管理器初始化失败，将使用基础HTTP请求: {e}")
         
         # 存储当前处理的PDF文件路径，用于后续清理
         self.current_pdf_file = None
@@ -55,7 +68,13 @@ class ContentFetcher:
                     return self._fetch_pdf_content(url)
                 else:
                     logger.info(f"根据Content-Type判断为网页: {content_type}")
-                    content = self._fetch_web_content(url)
+                    
+                    # 对于已知的JavaScript-heavy网站，优先使用Playwright
+                    if self._is_javascript_heavy_site(url) and self.playwright_manager:
+                        logger.info("检测到JavaScript-heavy网站，使用Playwright获取内容")
+                        content = self._fetch_web_content_with_playwright(url)
+                    else:
+                        content = self._fetch_web_content(url)
                     
                     # 对网页内容也进行基本验证
                     if content:
@@ -616,6 +635,50 @@ class ContentFetcher:
         except Exception as e:
             logger.error(f"网页内容获取失败: {e}")
             return None
+    
+    def _is_javascript_heavy_site(self, url: str) -> bool:
+        """判断是否为JavaScript-heavy网站"""
+        javascript_heavy_domains = [
+            'jobbnorge.no',
+            'linkedin.com',
+            'indeed.com',
+            'glassdoor.com',
+            'monster.com',
+            'careerbuilder.com',
+            'ziprecruiter.com'
+        ]
+        
+        for domain in javascript_heavy_domains:
+            if domain in url.lower():
+                return True
+        return False
+    
+    def _fetch_web_content_with_playwright(self, url: str) -> Optional[str]:
+        """使用Playwright获取网页内容（通过独立进程）"""
+        if not self.playwright_manager:
+            logger.warning("Playwright进程管理器未初始化，回退到基础HTTP请求")
+            return self._fetch_web_content(url)
+        
+        try:
+            from config import PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_SCROLL_ENABLED
+            
+            logger.info(f"使用Playwright独立进程获取网页内容: {url}")
+            content = self.playwright_manager.get_page_content(
+                url, 
+                scroll_enabled=PLAYWRIGHT_SCROLL_ENABLED,
+                timeout=PLAYWRIGHT_TIMEOUT
+            )
+            
+            if content and len(content.strip()) > 100:
+                logger.info(f"✅ Playwright独立进程获取内容成功，长度: {len(content)} 字符")
+                return content
+            else:
+                logger.warning("Playwright获取的内容过短或为空，回退到基础HTTP请求")
+                return self._fetch_web_content(url)
+                
+        except Exception as e:
+            logger.warning(f"Playwright独立进程获取内容失败: {e}，回退到基础HTTP请求")
+            return self._fetch_web_content(url)
     
     def _check_content_type(self, url: str) -> Optional[str]:
         """检查URL的Content-Type"""

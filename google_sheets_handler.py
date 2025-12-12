@@ -255,8 +255,8 @@ class GoogleSheetsHandler:
                 else:
                     logger.warning(f"列不存在: {column}")
             
-            # 设置验证人
-            if 'Verifier' in self.df.columns:
+            # 设置验证人（只有verifier不为空时才设置）
+            if 'Verifier' in self.df.columns and verifier:
                 if self.df['Verifier'].dtype in ['float64', 'int64']:
                     self.df['Verifier'] = self.df['Verifier'].astype('object')
                 self.df.loc[row_index, 'Verifier'] = verifier
