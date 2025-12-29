@@ -2,6 +2,18 @@
 基于LLM的文本智能分析与Excel字段自动填写系统
 主入口文件
 """
+import os
+import socket
+
+# 强制使用IPv4连接（解决macOS等系统上的IPv6连接问题）
+_FORCE_IPV4 = os.getenv('FORCE_IPV4', 'true').lower() == 'true'
+
+if _FORCE_IPV4:
+    _real_getaddrinfo = socket.getaddrinfo
+    def ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        return _real_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+    socket.getaddrinfo = ipv4_only_getaddrinfo
+
 import sys
 import logging
 from pathlib import Path

@@ -98,6 +98,118 @@ def is_pdf_url(url):
     except Exception:
         return False
 
+def is_google_drive_url(url):
+    """检查URL是否为Google Drive链接"""
+    if not url:
+        return False
+    
+    try:
+        parsed = urlparse(url)
+        # 检查是否为 drive.google.com 域名
+        if 'drive.google.com' in parsed.netloc.lower():
+            # 检查是否为文件查看链接或下载链接
+            if '/file/d/' in parsed.path or '/uc?' in parsed.path:
+                return True
+    except Exception:
+        pass
+    
+    return False
+
+def extract_google_drive_file_id(url):
+    """从Google Drive URL中提取文件ID"""
+    if not url:
+        return None
+    
+    try:
+        # 匹配格式: https://drive.google.com/file/d/FILE_ID/view
+        # 或: https://drive.google.com/file/d/FILE_ID/edit
+        # 或: https://drive.google.com/open?id=FILE_ID
+        match = re.search(r'/file/d/([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+        
+        # 匹配格式: https://drive.google.com/open?id=FILE_ID
+        match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+        
+        # 匹配格式: https://drive.google.com/uc?id=FILE_ID
+        match = re.search(r'/uc[?&]id=([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+            
+    except Exception as e:
+        logger.debug(f"提取Google Drive文件ID失败: {e}")
+    
+    return None
+
+def convert_google_drive_to_download(url):
+    """将Google Drive查看链接转换为直接下载链接"""
+    file_id = extract_google_drive_file_id(url)
+    if not file_id:
+        return None
+    
+    # 转换为直接下载链接
+    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    return download_url
+
+def is_google_docs_url(url):
+    """检查URL是否为Google Docs链接"""
+    if not url:
+        return False
+    
+    try:
+        parsed = urlparse(url)
+        # 检查是否为 docs.google.com 域名
+        if 'docs.google.com' in parsed.netloc.lower():
+            # 检查是否为文档链接
+            if '/document/d/' in parsed.path:
+                return True
+    except Exception:
+        pass
+    
+    return False
+
+def extract_google_docs_document_id(url):
+    """从Google Docs URL中提取文档ID"""
+    if not url:
+        return None
+    
+    try:
+        # 匹配格式: https://docs.google.com/document/d/DOCUMENT_ID/edit
+        # 或: https://docs.google.com/document/d/DOCUMENT_ID/view
+        match = re.search(r'/document/d/([a-zA-Z0-9_-]+)', url)
+        if match:
+            return match.group(1)
+    except Exception as e:
+        logger.debug(f"提取Google Docs文档ID失败: {e}")
+    
+    return None
+
+def convert_google_docs_to_export(url, format='txt'):
+    """
+    将Google Docs查看链接转换为导出链接
+    
+    Args:
+        url: Google Docs链接
+        format: 导出格式，可选值: 'txt', 'pdf', 'html', 'docx', 'rtf'
+    
+    Returns:
+        str: 导出链接，失败返回None
+    """
+    document_id = extract_google_docs_document_id(url)
+    if not document_id:
+        return None
+    
+    # 支持的导出格式
+    valid_formats = ['txt', 'pdf', 'html', 'docx', 'rtf', 'odt', 'epub']
+    if format not in valid_formats:
+        format = 'txt'  # 默认使用文本格式
+    
+    # 转换为导出链接
+    export_url = f"https://docs.google.com/document/d/{document_id}/export?format={format}"
+    return export_url
+
 def sanitize_filename(filename):
     """清理文件名，移除不安全字符"""
     # 移除不安全字符

@@ -6,7 +6,7 @@ import fitz  # PyMuPDF
 from bs4 import BeautifulSoup
 import logging
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import hashlib
 import time
 import re
@@ -15,7 +15,9 @@ from typing import Optional
 import sys
 
 from config import PDF_CACHE_DIR, REQUEST_TIMEOUT, PDF_DOWNLOAD_TIMEOUT, MAX_RETRIES
-from utils import is_pdf_url, sanitize_filename, normalize_text
+from utils import (is_pdf_url, sanitize_filename, normalize_text, 
+                   is_google_drive_url, convert_google_drive_to_download, extract_google_drive_file_id,
+                   is_google_docs_url, convert_google_docs_to_export, extract_google_docs_document_id)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,16 @@ class ContentFetcher:
         logger.info(f"开始获取内容: {url}")
         
         try:
+            # 优先处理Google Docs链接
+            if is_google_docs_url(url):
+                logger.info("检测到Google Docs链接，使用特殊处理流程")
+                return self._handle_google_docs_url(url)
+            
+            # 优先处理Google Drive链接
+            if is_google_drive_url(url):
+                logger.info("检测到Google Drive链接，使用特殊处理流程")
+                return self._handle_google_drive_url(url)
+            
             # 首先尝试基于URL判断
             if is_pdf_url(url):
                 logger.info("根据URL判断为PDF文件，使用PDF处理流程")
@@ -89,6 +101,368 @@ class ContentFetcher:
         except Exception as e:
             logger.error(f"获取内容失败: {e}")
             return None
+    
+    def _handle_google_drive_url(self, url: str) -> Optional[str]:
+        """处理Google Drive链接，尝试下载PDF或提取文本"""
+        logger.info(f"处理Google Drive链接: {url}")
+        
+        try:
+            # 方法1: 尝试转换为直接下载链接并下载PDF
+            logger.info("方法1: 尝试转换为直接下载链接...")
+            download_url = convert_google_drive_to_download(url)
+            
+            if download_url:
+                logger.info(f"转换后的下载链接: {download_url}")
+                
+                # 尝试下载PDF
+                pdf_content = self._fetch_pdf_content(download_url)
+                if pdf_content:
+                    logger.info("✅ 通过直接下载链接成功获取PDF内容")
+                    return pdf_content
+                
+                # 如果下载失败，可能是遇到了病毒扫描警告页面
+                # 尝试处理病毒扫描警告
+                logger.info("直接下载失败，尝试处理病毒扫描警告...")
+                pdf_content = self._handle_google_drive_virus_scan(download_url)
+                if pdf_content:
+                    logger.info("✅ 通过处理病毒扫描警告成功获取PDF内容")
+                    return pdf_content
+            
+            # 方法2: 使用Playwright从PDF预览器中提取文本（备用方案）
+            logger.info("方法2: 使用Playwright从PDF预览器中提取文本...")
+            if self.playwright_manager:
+                playwright_content = self._fetch_google_drive_with_playwright(url)
+                if playwright_content:
+                    logger.info("✅ 通过Playwright成功获取内容")
+                    return playwright_content
+            
+            logger.error("所有Google Drive处理方法都失败")
+            return None
+            
+        except Exception as e:
+            logger.error(f"处理Google Drive链接失败: {e}")
+            return None
+    
+    def _handle_google_drive_virus_scan(self, download_url: str) -> Optional[str]:
+        """处理Google Drive的病毒扫描警告页面"""
+        try:
+            # 第一次请求可能会返回病毒扫描警告页面
+            response = self._download_with_retry(download_url, PDF_DOWNLOAD_TIMEOUT)
+            if not response:
+                return None
+            
+            # 检查响应内容
+            content_type = response.headers.get('content-type', '').lower()
+            
+            # 如果返回的是PDF，直接处理
+            if 'pdf' in content_type:
+                # 保存PDF并提取文本
+                url_hash = hashlib.md5(download_url.encode()).hexdigest()
+                cache_file = PDF_CACHE_DIR / f"{url_hash}_gdrive.pdf"
+                self.current_pdf_file = cache_file
+                
+                with open(cache_file, 'wb') as f:
+                    f.write(response.content)
+                
+                return self._extract_pdf_text(cache_file)
+            
+            # 如果是HTML（病毒扫描警告页面），尝试提取确认链接
+            if 'html' in content_type:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # 查找确认下载的链接或表单
+                # Google Drive的病毒扫描警告页面通常包含一个确认下载的链接
+                confirm_link = None
+                
+                # 尝试查找确认链接（多种可能的格式）
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href', '')
+                    if 'export=download' in href and 'confirm=' in href:
+                        confirm_link = href
+                        break
+                
+                # 如果找到确认链接，再次请求
+                if confirm_link:
+                    # 如果是相对链接，转换为绝对链接
+                    if confirm_link.startswith('/'):
+                        confirm_link = urljoin(download_url, confirm_link)
+                    
+                    logger.info(f"找到确认链接，再次请求: {confirm_link}")
+                    confirm_response = self._download_with_retry(confirm_link, PDF_DOWNLOAD_TIMEOUT)
+                    
+                    if confirm_response:
+                        content_type = confirm_response.headers.get('content-type', '').lower()
+                        if 'pdf' in content_type:
+                            # 保存PDF并提取文本
+                            url_hash = hashlib.md5(download_url.encode()).hexdigest()
+                            cache_file = PDF_CACHE_DIR / f"{url_hash}_gdrive.pdf"
+                            self.current_pdf_file = cache_file
+                            
+                            with open(cache_file, 'wb') as f:
+                                f.write(confirm_response.content)
+                            
+                            return self._extract_pdf_text(cache_file)
+                
+                # 如果找不到确认链接，尝试从表单中提取
+                form = soup.find('form', {'id': 'download-form'})
+                if form:
+                    action = form.get('action', '')
+                    if action:
+                        if action.startswith('/'):
+                            action = urljoin(download_url, action)
+                        
+                        # 提取表单数据
+                        form_data = {}
+                        for input_tag in form.find_all('input'):
+                            name = input_tag.get('name')
+                            value = input_tag.get('value', '')
+                            if name:
+                                form_data[name] = value
+                        
+                        if form_data:
+                            logger.info(f"找到表单，提交确认: {action}")
+                            form_response = self.session.post(action, data=form_data, timeout=PDF_DOWNLOAD_TIMEOUT)
+                            
+                            if form_response.status_code == 200:
+                                content_type = form_response.headers.get('content-type', '').lower()
+                                if 'pdf' in content_type:
+                                    # 保存PDF并提取文本
+                                    url_hash = hashlib.md5(download_url.encode()).hexdigest()
+                                    cache_file = PDF_CACHE_DIR / f"{url_hash}_gdrive.pdf"
+                                    self.current_pdf_file = cache_file
+                                    
+                                    with open(cache_file, 'wb') as f:
+                                        f.write(form_response.content)
+                                    
+                                    return self._extract_pdf_text(cache_file)
+            
+        except Exception as e:
+            logger.debug(f"处理病毒扫描警告失败: {e}")
+        
+        return None
+    
+    def _fetch_google_drive_with_playwright(self, url: str) -> Optional[str]:
+        """使用Playwright从Google Drive PDF预览器中提取文本"""
+        if not self.playwright_manager:
+            return None
+        
+        try:
+            from config import PLAYWRIGHT_TIMEOUT, PLAYWRIGHT_SCROLL_ENABLED
+            
+            logger.info(f"使用Playwright处理Google Drive链接: {url}")
+            
+            # 使用Playwright获取页面内容
+            content = self.playwright_manager.get_page_content(
+                url,
+                scroll_enabled=False,  # Google Drive PDF预览器不需要滚动
+                timeout=PLAYWRIGHT_TIMEOUT
+            )
+            
+            if not content:
+                return None
+            
+            # 检查内容是否包含PDF预览器的文本
+            # Google Drive的PDF预览器通常会在页面中嵌入PDF内容
+            # 如果内容太短（只有"Loading..."），说明没有成功加载
+            if len(content.strip()) < 200:
+                logger.warning("Playwright获取的内容过短，可能未成功加载PDF预览器")
+                return None
+            
+            # 检查是否包含常见的Google Drive占位文本
+            placeholder_texts = ['Loading…', 'Sign in', 'Unable to preview', 'Access denied']
+            if any(placeholder in content for placeholder in placeholder_texts):
+                if len(content.strip()) < 500:  # 如果内容主要是占位文本
+                    logger.warning("检测到Google Drive占位文本，PDF预览器可能未成功加载")
+                    return None
+            
+            # 如果内容看起来有效，返回它
+            # 注意：Google Drive的PDF预览器可能不会直接显示所有文本
+            # 这种情况下，我们返回获取到的内容，让后续的LLM分析处理
+            logger.info(f"✅ Playwright获取到内容，长度: {len(content)} 字符")
+            return content
+            
+        except Exception as e:
+            logger.warning(f"使用Playwright处理Google Drive链接失败: {e}")
+            return None
+    
+    def _handle_google_docs_url(self, url: str) -> Optional[str]:
+        """处理Google Docs链接，尝试导出文本或PDF"""
+        logger.info(f"处理Google Docs链接: {url}")
+        
+        try:
+            # 方法1: 尝试导出为文本格式（最轻量，最快）
+            logger.info("方法1: 尝试导出为文本格式...")
+            txt_export_url = convert_google_docs_to_export(url, format='txt')
+            
+            if txt_export_url:
+                logger.info(f"文本导出链接: {txt_export_url}")
+                txt_content = self._fetch_google_docs_export(txt_export_url, format='txt')
+                if txt_content:
+                    logger.info("✅ 通过文本导出成功获取内容")
+                    return txt_content
+            
+            # 方法2: 尝试导出为PDF格式
+            logger.info("方法2: 尝试导出为PDF格式...")
+            pdf_export_url = convert_google_docs_to_export(url, format='pdf')
+            
+            if pdf_export_url:
+                logger.info(f"PDF导出链接: {pdf_export_url}")
+                pdf_content = self._fetch_google_docs_export(pdf_export_url, format='pdf')
+                if pdf_content:
+                    logger.info("✅ 通过PDF导出成功获取内容")
+                    return pdf_content
+            
+            # 方法3: 使用Playwright从文档编辑器中提取文本（备用方案）
+            logger.info("方法3: 使用Playwright从文档编辑器中提取文本...")
+            if self.playwright_manager:
+                playwright_content = self._fetch_google_docs_with_playwright(url)
+                if playwright_content:
+                    logger.info("✅ 通过Playwright成功获取内容")
+                    return playwright_content
+            
+            logger.error("所有Google Docs处理方法都失败")
+            return None
+            
+        except Exception as e:
+            logger.error(f"处理Google Docs链接失败: {e}")
+            return None
+    
+    def _fetch_google_docs_export(self, export_url: str, format: str = 'txt') -> Optional[str]:
+        """获取Google Docs导出内容"""
+        try:
+            response = self._download_with_retry(export_url, REQUEST_TIMEOUT)
+            if not response:
+                return None
+            
+            # 检查响应状态
+            if response.status_code != 200:
+                logger.warning(f"Google Docs导出失败，状态码: {response.status_code}")
+                return None
+            
+            content_type = response.headers.get('content-type', '').lower()
+            
+            if format == 'txt':
+                # 文本格式直接返回
+                if 'text/plain' in content_type or 'text/html' in content_type:
+                    text = response.text
+                    # 清理文本
+                    text = normalize_text(text)
+                    if text and len(text.strip()) > 50:
+                        logger.info(f"✅ 成功获取文本内容，长度: {len(text)} 字符")
+                        return text
+                else:
+                    # 即使Content-Type不对，也尝试解析为文本
+                    try:
+                        text = response.text
+                        text = normalize_text(text)
+                        if text and len(text.strip()) > 50:
+                            logger.info(f"✅ 成功获取文本内容（忽略Content-Type），长度: {len(text)} 字符")
+                            return text
+                    except Exception:
+                        pass
+            
+            elif format == 'pdf':
+                # PDF格式需要提取文本
+                if 'pdf' in content_type or export_url.endswith('format=pdf'):
+                    # 保存PDF到临时文件
+                    document_id = extract_google_docs_document_id(export_url) or 'gdocs'
+                    url_hash = hashlib.md5(export_url.encode()).hexdigest()
+                    cache_file = PDF_CACHE_DIR / f"{url_hash}_{document_id}.pdf"
+                    self.current_pdf_file = cache_file
+                    
+                    with open(cache_file, 'wb') as f:
+                        f.write(response.content)
+                    
+                    # 提取PDF文本
+                    pdf_text = self._extract_pdf_text(cache_file)
+                    if pdf_text:
+                        logger.info(f"✅ 成功从PDF导出提取文本，长度: {len(pdf_text)} 字符")
+                        return pdf_text
+            
+            logger.warning(f"Google Docs导出格式 {format} 处理失败")
+            return None
+            
+        except Exception as e:
+            logger.error(f"获取Google Docs导出内容失败: {e}")
+            return None
+    
+    def _fetch_google_docs_with_playwright(self, url: str) -> Optional[str]:
+        """使用Playwright从Google Docs编辑器中提取文本"""
+        if not self.playwright_manager:
+            return None
+        
+        try:
+            from config import PLAYWRIGHT_TIMEOUT
+            
+            logger.info(f"使用Playwright处理Google Docs链接: {url}")
+            
+            # 使用Playwright获取页面内容
+            content = self.playwright_manager.get_page_content(
+                url,
+                scroll_enabled=True,  # Google Docs可能需要滚动加载完整内容
+                timeout=PLAYWRIGHT_TIMEOUT
+            )
+            
+            if not content:
+                return None
+            
+            # 检查内容是否包含常见的占位文本
+            placeholder_texts = [
+                'JavaScript isn\'t enabled',
+                'Enable and reload',
+                'Sign in',
+                'Unable to preview',
+                'Access denied',
+                'This browser version is no longer supported'
+            ]
+            
+            # 如果内容主要是占位文本，说明没有成功加载
+            placeholder_count = sum(1 for placeholder in placeholder_texts if placeholder in content)
+            if placeholder_count >= 2 and len(content.strip()) < 500:
+                logger.warning("检测到Google Docs占位文本，文档可能未成功加载")
+                return None
+            
+            # 清理内容：移除导航栏、工具栏等无关文本
+            cleaned_content = self._clean_google_docs_content(content)
+            
+            if cleaned_content and len(cleaned_content.strip()) > 200:
+                logger.info(f"✅ Playwright获取到内容，长度: {len(cleaned_content)} 字符")
+                return cleaned_content
+            else:
+                logger.warning("Playwright获取的内容过短或为空")
+                return None
+            
+        except Exception as e:
+            logger.warning(f"使用Playwright处理Google Docs链接失败: {e}")
+            return None
+    
+    def _clean_google_docs_content(self, content: str) -> str:
+        """清理Google Docs内容，移除导航栏、工具栏等无关文本"""
+        try:
+            # 移除常见的Google Docs界面元素文本
+            # 这些文本通常出现在页面顶部或底部
+            unwanted_patterns = [
+                r'File\s+Edit\s+View\s+Tools\s+Help',
+                r'Accessibility\s+Debug',
+                r'Tab\s+External\s+Share',
+                r'Sign in',
+                r'JavaScript isn\'t enabled.*?Enable and reload',
+                r'This browser version is no longer supported.*?upgrade to a supported browser',
+            ]
+            
+            cleaned = content
+            for pattern in unwanted_patterns:
+                cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE | re.DOTALL)
+            
+            # 移除多余空白
+            cleaned = normalize_text(cleaned)
+            
+            return cleaned
+            
+        except Exception as e:
+            logger.debug(f"清理Google Docs内容失败: {e}")
+            return content
     
     def _fetch_pdf_content(self, url: str) -> Optional[str]:
         """下载PDF并提取文本内容"""
