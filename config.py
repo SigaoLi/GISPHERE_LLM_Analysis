@@ -22,6 +22,7 @@ GOOGLE_SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 # 缓存目录
 CACHE_DIR = PROJECT_ROOT / "cache"
 PDF_CACHE_DIR = CACHE_DIR / "pdf"
+SCREENSHOT_CACHE_DIR = CACHE_DIR / "screenshots"
 
 # 日志配置
 LOG_DIR = PROJECT_ROOT / "logs"
@@ -39,6 +40,22 @@ SCROLL_BUFFER = 1000  # 页面底部缓冲像素数
 USE_PLAYWRIGHT = True  # 是否使用Playwright（通过独立进程，无异步冲突）
 PLAYWRIGHT_TIMEOUT = 60  # Playwright页面加载超时时间（秒）
 PLAYWRIGHT_SCROLL_ENABLED = True  # 是否启用滚动加载
+
+# 智能页面加载配置
+USE_SMART_PAGE_LOADER = True  # 是否使用智能页面加载检测
+SMART_LOAD_INITIAL_WAIT = 15  # 智能检测前的初始等待时间（秒），给页面足够时间加载
+SMART_LOAD_MAX_WAIT = 60  # 智能加载最大等待时间（秒）
+SMART_LOAD_STABILITY_INTERVAL = 1.0  # 内容稳定性检查间隔（秒）
+SMART_LOAD_STABILITY_THRESHOLD = 3  # 内容稳定性阈值（连续N次无变化）
+SMART_LOAD_MIN_CONTENT_LENGTH = 500  # 最小内容长度阈值
+SMART_LOAD_MAX_RETRIES = 2  # 加载失败时的最大重试次数
+
+# 截图OCR配置
+USE_SCREENSHOT_OCR = True  # 是否启用截图OCR作为fallback
+OCR_LANGUAGE = 'eng+chi_sim'  # OCR语言设置 (eng=英文, chi_sim=简体中文)
+SCREENSHOT_QUALITY = 100  # 截图质量 (1-100, 注意: PNG格式不使用此参数)
+SCREENSHOT_MAX_PAGES = 10  # 长页面最大截图页数
+SCREENSHOT_CLEANUP_AFTER_USE = True  # 使用后是否自动清理截图
 
 # LLM 配置
 OPENAI_MODEL = "gpt-5-chat-latest"
@@ -127,7 +144,7 @@ def setup_logging():
 
 def ensure_directories():
     """确保所有必要目录存在"""
-    directories = [CACHE_DIR, PDF_CACHE_DIR, LOG_DIR, LLM_LOG_DIR]
+    directories = [CACHE_DIR, PDF_CACHE_DIR, SCREENSHOT_CACHE_DIR, LOG_DIR, LLM_LOG_DIR]
     for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
 

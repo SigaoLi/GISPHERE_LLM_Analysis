@@ -15,6 +15,7 @@ class AnalysisStageManager:
         self.llm_agent = LLMAgent()
         self.contact_verifier = ContactVerifier(self.llm_agent)
         self.current_row_index = None
+        self._cleaned = False  # 添加清理标志
         
     def analyze_text_complete(self, text: str, row_index: int) -> Tuple[bool, Dict, str]:
         """
@@ -204,11 +205,19 @@ class AnalysisStageManager:
     
     def cleanup(self):
         """清理资源"""
+        # 检查是否已经清理，避免重复清理
+        if self._cleaned:
+            return
+        
         if hasattr(self, 'contact_verifier') and self.contact_verifier:
             try:
                 self.contact_verifier.cleanup()
             except Exception as e:
                 logger.warning(f"清理联系人验证器资源失败: {e}")
+            finally:
+                self.contact_verifier = None
+        
+        self._cleaned = True  # 标记为已清理
     
     def __del__(self):
         """析构函数，确保资源被清理"""
@@ -228,20 +237,22 @@ class AnalysisStageManager:
             if not result:
                 return False, {}, "LLM返回空结果"
             
-            # 验证结果格式
-            if not validate_analysis_result(result, 'stage2'):
-                return False, {}, "结果格式验证失败"
+            # 验证结果格式（现在只返回值为"1"的字段）
+            # 确保所有返回的字段值都是"1"
+            for key, value in result.items():
+                if value != "1":
+                    return False, {}, f"字段 {key} 的值不是 '1'，而是 '{value}'"
             
             # 验证专业方向字段数量（最多5个，最少1个）
             geo_fields = ['Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS']
-            marked_fields = [field for field in geo_fields if result.get(field) == "1"]
+            marked_fields = [field for field in geo_fields if field in result and result[field] == "1"]
             
             if len(marked_fields) == 0:
                 return False, {}, "未标记任何专业方向，至少需要标记1个专业方向"
             elif len(marked_fields) > 5:
                 return False, {}, f"标记了{len(marked_fields)}个专业方向，超过最大限制5个"
             
-            logger.info("阶段2分析成功")
+            logger.info(f"阶段2分析成功，返回 {len(result)} 个字段: {list(result.keys())}")
             return True, result, ""
             
         except Exception as e:
@@ -283,20 +294,23 @@ class AnalysisStageManager:
         """后处理分析结果，现在支持部分结果处理"""
         logger.info("开始后处理分析结果")
         
-        # 定义所有可能的字段，但只处理已存在的字段
-        all_fields = [
-            'Deadline', 'Number_Places', 'Direction', 'University_EN', 'Contact_Name', 'Contact_Email',
+        # 定义阶段1和阶段3的字段（这些字段如果不存在需要添加空值）
+        stage1_fields = ['Deadline', 'Number_Places', 'Direction', 'University_EN', 'Contact_Name', 'Contact_Email']
+        stage3_fields = ['University_CN', 'Country_CN', 'WX_Label1', 'WX_Label2', 'WX_Label3', 'WX_Label4', 'WX_Label5']
+        
+        # 阶段2的字段（只保留LLM返回的，不添加空值）
+        stage2_fields = [
             'Master Student', 'Doctoral Student', 'PostDoc', 'Research Assistant', 
             'Competition', 'Summer School', 'Conference', 'Workshop',
-            'Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS',
-            'University_CN', 'Country_CN', 'WX_Label1', 'WX_Label2', 'WX_Label3', 'WX_Label4', 'WX_Label5'
+            'Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS'
         ]
         
-        # 只为不存在的必要字段添加空值（保持部分结果的完整性）
-        # 但不强制所有字段都存在，允许部分结果
-        for field in all_fields:
+        # 只为阶段1和阶段3的字段添加空值（如果不存在）
+        for field in stage1_fields + stage3_fields:
             if field not in results:
                 results[field] = ""
+        
+        # 注意：不为阶段2字段添加空值，只处理LLM返回的字段
         
         # 数据类型转换和清理（只处理已存在的字段）
         results = self._clean_and_convert_data(results)
@@ -313,7 +327,7 @@ class AnalysisStageManager:
     
     def _clean_and_convert_data(self, results: Dict) -> Dict:
         """清理和转换数据"""
-        # 清理字符串字段
+        # 清理字符串字段（只处理已存在的字段）
         string_fields = ['Deadline', 'Direction', 'University_EN', 'Contact_Name', 'Contact_Email',
                         'University_CN', 'Country_CN', 'WX_Label1', 'WX_Label2', 'WX_Label3']
         
@@ -348,7 +362,7 @@ class AnalysisStageManager:
             except:
                 results['Number_Places'] = ""
         
-        # 确保二进制字段只有"1"或空字符串
+        # 确保阶段2的二进制字段只有"1"（只处理已存在的字段，不添加空字符串）
         binary_fields = ['Master Student', 'Doctoral Student', 'PostDoc', 'Research Assistant',
                         'Competition', 'Summer School', 'Conference', 'Workshop',
                         'Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS']
@@ -356,7 +370,11 @@ class AnalysisStageManager:
         for field in binary_fields:
             if field in results:
                 value = str(results[field]).strip()
-                results[field] = "1" if value == "1" else ""
+                # 如果值不是"1"，则从结果中删除该字段（而不是设为空字符串）
+                if value == "1":
+                    results[field] = "1"
+                else:
+                    del results[field]
         
         return results
     

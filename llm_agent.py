@@ -264,10 +264,10 @@ TEXT TO ANALYZE:
 CATEGORIZATION INSTRUCTIONS:
 CRITICAL RULE: 
 - You MUST ONLY categorize based on information that is stated in the provided text. 
-- If the text content does not indicate anything related to any categories, use the specified default values.
-- You MUST return a COMPLETE JSON object with ALL required fields.
+- IMPORTANT: ONLY include fields with value "1" in your response. DO NOT include fields that don't apply.
+- You must mark at least 1 and at most 5 Research Fields.
 
-Position Types (mark "1" if mentioned, otherwise leave empty):
+Position Types (mark "1" if mentioned, DO NOT include in response if not applicable):
 - "Master Student": Master's degree students
 - "Doctoral Student": Doctoral's degree students (PhD students)  
 - "PostDoc": Postdoctoral researchers (If a research assistant position also requires the candidate to have a PhD degree, then this category counts as a postdoctoral)
@@ -277,7 +277,7 @@ Position Types (mark "1" if mentioned, otherwise leave empty):
 - "Conference": Academic conferences
 - "Workshop": Workshops
 
-Research Fields (mark "1" if the text content is related to the following categories, otherwise leave empty. Maximum fill 3 fields, minimum fill 1 field.):
+Research Fields (mark "1" if the text content is related to the following categories, DO NOT include in response if not applicable. Maximum fill 5 fields, minimum fill 1 field.):
 - "Physical_Geo": Physical Geography, Agriculture, Environmental Sciences, Climatology, Ecology, Geology, Earth Sciences, Hydrology, Biodiversity, Landscape Ecology, Climate Change, Soil Science, Natural Hazards, Geomorphology, Oceanography, Atmospheric Sciences, etc.
 - "Human_Geo": Human Geography, Health Geography, Economic Geography, Demography, Medical Geography, Social Geography, Cultural Geography, Political Geography, Population Studies, Migration Studies, Tourism Geography, Behavioral Geography, Development Studies, Regional Studies, etc.
 - "Urban": Urban Planning, Smart City, Land Use, Architecture, Sustainable Cities, Urban Design, Urban Development, City Planning, Metropolitan Studies, Urban Transportation, Urban Environment, Urban Policy, Housing Studies, Infrastructure Planning, Urban Analytics, Urban Modeling, etc.
@@ -285,7 +285,7 @@ Research Fields (mark "1" if the text content is related to the following catego
 - "RS": Remote Sensing, Satellite Imagery, Unmanned Aerial Vehicle (Drone), Earth Observation, Image Processing, Multispectral Analysis, Hyperspectral Analysis, Radar Imaging, LiDAR, Aerial Photography, Satellite Data Analysis, Change Detection, Land Cover Classification, Digital Image Processing, etc.
 - "GNSS": Global Navigation Satellite Systems, GPS, Surveying and Mapping, Geodesy, Precision Positioning, Navigation Systems, Satellite Navigation, Location Services, Geolocation Technology, Positioning Systems, etc.
 
-REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
+REQUIRED JSON FORMAT (ALL fields shown below for reference - but ONLY include fields with value "1" in your actual response):
 {{
   "Master Student": "1",
   "Doctoral Student": "1",
@@ -303,7 +303,15 @@ REQUIRED JSON FORMAT (EXAMPLE ONLY - DO NOT COPY THESE VALUES):
   "GNSS": "1"
 }}
 
-IMPORTANT: Analyze the actual text content to determine which categories apply, not the example values.
+EXAMPLE RESPONSE (only fields that apply):
+{{
+  "Master Student": "1",
+  "Doctoral Student": "1",
+  "Physical_Geo": "1",
+  "GIS": "1"
+}}
+
+IMPORTANT: Analyze the actual text content to determine which categories apply. ONLY return the fields that have value "1".
 """
         
         response = self.call_llm(prompt, system_prompt)

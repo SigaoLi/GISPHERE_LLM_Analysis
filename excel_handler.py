@@ -4,7 +4,7 @@ Excel文件处理模块 - 现已集成Google Sheets支持
 import pandas as pd
 import logging
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import numpy as np
 
 from config import EXCEL_FILE, SHEET_NAME, EXCEL_COLUMNS, check_google_credentials
@@ -131,29 +131,43 @@ class ExcelHandler:
         
         return row_data
     
-    def extract_link_from_row(self, row_data: Dict) -> Optional[str]:
-        """从行数据中提取链接"""
+    def extract_link_from_row(self, row_data: Dict) -> Tuple[Optional[str], bool]:
+        """
+        从行数据中提取链接
+        优先级：Source > Notes
+        
+        Returns:
+            tuple: (url, used_notes) - url为提取的链接，used_notes表示是否使用了Notes中的链接
+        """
         if self.use_google_sheets and self.google_handler:
             return self.google_handler.extract_link_from_row(row_data)
         
         from utils import extract_url_from_text, is_valid_url
         
-        # 首先尝试从Notes中提取链接
+        # 优先从Source中获取链接
+        source = row_data.get('Source', '')
+        if source:
+            # Source可能直接是URL，也可能包含URL
+            if is_valid_url(source.strip()):
+                logger.info(f"从Source中获取到链接: {source.strip()}")
+                return (source.strip(), False)
+            else:
+                # 尝试从Source中提取URL
+                url = extract_url_from_text(source)
+                if url:
+                    logger.info(f"从Source中提取到链接: {url}")
+                    return (url, False)
+        
+        # 如果Source中没有链接，尝试从Notes中提取
         notes = row_data.get('Notes', '')
         if notes:
             url = extract_url_from_text(notes)
             if url:
                 logger.info(f"从Notes中提取到链接: {url}")
-                return url
-        
-        # 如果Notes中没有链接，尝试从Source中获取
-        source = row_data.get('Source', '')
-        if source and is_valid_url(source):
-            logger.info(f"从Source中获取到链接: {source}")
-            return source
+                return (url, True)
         
         logger.warning("未找到有效链接")
-        return None
+        return (None, False)
     
     def update_row_data(self, row_index: int, update_data: Dict, verifier: str = "LLM") -> bool:
         """更新指定行的数据"""
@@ -356,12 +370,45 @@ def validate_analysis_result(result: Dict, stage: str) -> bool:
         logger.error(f"{stage} 分析结果不是字典格式")
         return False
     
-    # 定义每个阶段应该包含的字段
+    # 阶段2特殊处理：只返回值为"1"的字段
+    if stage == 'stage2':
+        # 定义阶段2允许的所有字段
+        allowed_fields = [
+            'Master Student', 'Doctoral Student', 'PostDoc', 'Research Assistant', 
+            'Competition', 'Summer School', 'Conference', 'Workshop',
+            'Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS'
+        ]
+        
+        # 检查返回的字段是否都在允许的列表中
+        invalid_fields = [field for field in result.keys() if field not in allowed_fields]
+        if invalid_fields:
+            logger.error(f"阶段2 返回了无效字段: {invalid_fields}")
+            return False
+        
+        # 检查所有字段的值是否都是"1"
+        non_one_fields = [field for field, value in result.items() if value != "1"]
+        if non_one_fields:
+            logger.error(f"阶段2 字段值不是'1': {non_one_fields}")
+            return False
+        
+        # 检查研究方向字段（至少1个，最多5个）
+        geo_fields = ['Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS']
+        marked_geo_fields = [field for field in geo_fields if field in result]
+        
+        if len(marked_geo_fields) == 0:
+            logger.error("阶段2 至少需要标记1个研究方向字段")
+            return False
+        
+        if len(marked_geo_fields) > 5:
+            logger.error(f"阶段2 研究方向字段过多: {len(marked_geo_fields)} (最多5个)")
+            return False
+        
+        logger.info(f"阶段2 分析结果格式验证通过，返回 {len(result)} 个字段")
+        return True
+    
+    # 阶段1和阶段3：检查所有必需字段是否存在
     stage_fields = {
         'stage1': ['Deadline', 'Number_Places', 'Direction', 'University_EN', 'Contact_Name', 'Contact_Email'],
-        'stage2': ['Master Student', 'Doctoral Student', 'PostDoc', 'Research Assistant', 
-                  'Competition', 'Summer School', 'Conference', 'Workshop',
-                  'Physical_Geo', 'Human_Geo', 'Urban', 'GIS', 'RS', 'GNSS'],
         'stage3': ['University_CN', 'Country_CN', 'WX_Label1', 'WX_Label2', 'WX_Label3', 'WX_Label4', 'WX_Label5']
     }
     

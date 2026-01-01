@@ -21,6 +21,7 @@ class BrowserSearcher:
         self.playwright = None
         self.browser = None
         self.context = None
+        self._closed = False  # 添加关闭标志
         self._setup_playwright()
     
     def _setup_playwright(self):
@@ -273,16 +274,25 @@ class BrowserSearcher:
     
     def close(self):
         """关闭浏览器"""
+        # 检查是否已经关闭，避免重复关闭
+        if self._closed:
+            return
+        
         try:
             if self.context:
                 self.context.close()
+                self.context = None
             if self.browser:
                 self.browser.close()
+                self.browser = None
             if self.playwright:
                 self.playwright.stop()
+                self.playwright = None
+            self._closed = True  # 标记为已关闭
             logger.info("Playwright浏览器已关闭")
         except Exception as e:
             logger.warning(f"关闭Playwright浏览器失败: {e}")
+            self._closed = True  # 即使失败也标记为已关闭，避免重复尝试
     
     def __del__(self):
         """析构函数，确保浏览器被关闭"""

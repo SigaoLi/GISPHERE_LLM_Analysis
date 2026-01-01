@@ -29,6 +29,7 @@ class ContactVerifier:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
+        self._cleaned = False  # 添加清理标志
         
         # 尝试初始化Playwright浏览器（可选）
         self.browser_searcher = None
@@ -754,12 +755,20 @@ Important notes:
     
     def cleanup(self):
         """清理资源"""
+        # 检查是否已经清理，避免重复清理
+        if self._cleaned:
+            return
+        
         if self.browser_searcher:
             try:
                 self.browser_searcher.close()
                 logger.info("浏览器资源已清理")
             except Exception as e:
                 logger.warning(f"清理浏览器资源失败: {e}")
+            finally:
+                self.browser_searcher = None
+        
+        self._cleaned = True  # 标记为已清理
     
     def __del__(self):
         """析构函数，确保资源被清理"""

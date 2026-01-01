@@ -46,6 +46,19 @@ class ContentFetcher:
         
         # 存储当前处理的PDF文件路径，用于后续清理
         self.current_pdf_file = None
+        
+        # 初始化截图OCR提取器
+        self.screenshot_ocr_fetcher = None
+        try:
+            from config import USE_SCREENSHOT_OCR
+            if USE_SCREENSHOT_OCR:
+                from screenshot_ocr_fetcher import ScreenshotOCRFetcher
+                self.screenshot_ocr_fetcher = ScreenshotOCRFetcher()
+                logger.info("✅ 截图OCR提取器初始化成功")
+            else:
+                logger.info("截图OCR已在配置中禁用")
+        except Exception as e:
+            logger.warning(f"截图OCR提取器初始化失败: {e}")
     
     def fetch_content(self, url: str) -> Optional[str]:
         """根据URL类型获取内容"""
@@ -97,9 +110,26 @@ class ContentFetcher:
                         else:
                             logger.info("✅ 网页内容验证通过")
                     
+                    # 如果常规方法失败，尝试截图OCR作为fallback
+                    if not content or self._is_unavailable_content(content):
+                        logger.warning("⚠️  常规方法获取内容失败或内容不可用，尝试截图OCR...")
+                        screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+                        if screenshot_content:
+                            logger.info("✅ 通过截图OCR成功获取内容")
+                            return screenshot_content
+                        else:
+                            logger.warning("截图OCR也失败，返回常规方法的结果（可能为空）")
+                    
                     return content
         except Exception as e:
             logger.error(f"获取内容失败: {e}")
+            # 异常情况下也尝试截图OCR
+            if self.screenshot_ocr_fetcher and self.playwright_manager:
+                logger.info("尝试使用截图OCR作为最后的fallback...")
+                screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+                if screenshot_content:
+                    logger.info("✅ 通过截图OCR成功获取内容（异常恢复）")
+                    return screenshot_content
             return None
     
     def _handle_google_drive_url(self, url: str) -> Optional[str]:
@@ -136,11 +166,24 @@ class ContentFetcher:
                     logger.info("✅ 通过Playwright成功获取内容")
                     return playwright_content
             
+            # 方法3: 使用截图OCR作为最后的fallback
+            logger.info("方法3: 使用截图OCR作为最后的fallback...")
+            screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+            if screenshot_content:
+                logger.info("✅ 通过截图OCR成功获取内容")
+                return screenshot_content
+            
             logger.error("所有Google Drive处理方法都失败")
             return None
             
         except Exception as e:
             logger.error(f"处理Google Drive链接失败: {e}")
+            # 异常情况下也尝试截图OCR
+            if self.screenshot_ocr_fetcher and self.playwright_manager:
+                logger.info("尝试使用截图OCR作为异常恢复...")
+                screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+                if screenshot_content:
+                    return screenshot_content
             return None
     
     def _handle_google_drive_virus_scan(self, download_url: str) -> Optional[str]:
@@ -321,11 +364,24 @@ class ContentFetcher:
                     logger.info("✅ 通过Playwright成功获取内容")
                     return playwright_content
             
+            # 方法4: 使用截图OCR作为最后的fallback
+            logger.info("方法4: 使用截图OCR作为最后的fallback...")
+            screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+            if screenshot_content:
+                logger.info("✅ 通过截图OCR成功获取内容")
+                return screenshot_content
+            
             logger.error("所有Google Docs处理方法都失败")
             return None
             
         except Exception as e:
             logger.error(f"处理Google Docs链接失败: {e}")
+            # 异常情况下也尝试截图OCR
+            if self.screenshot_ocr_fetcher and self.playwright_manager:
+                logger.info("尝试使用截图OCR作为异常恢复...")
+                screenshot_content = self._fetch_content_with_screenshot_ocr(url)
+                if screenshot_content:
+                    return screenshot_content
             return None
     
     def _fetch_google_docs_export(self, export_url: str, format: str = 'txt') -> Optional[str]:
@@ -1113,6 +1169,110 @@ class ContentFetcher:
                 return True
         
         return False
+    
+    def _is_unavailable_content(self, content: str) -> bool:
+        """
+        检测内容是否不可用（如"暂不支持您的浏览器"、"无法下载"等）
+        
+        Args:
+            content: 页面内容
+            
+        Returns:
+            bool: 如果内容不可用返回True
+        """
+        if not content or len(content.strip()) < 50:
+            return True
+        
+        # 检测常见的"不可用"提示文本
+        unavailable_patterns = [
+            '暂不支持您的浏览器',
+            '推荐您下载',
+            '无法下载',
+            '无法打印',
+            '不支持下载',
+            '不支持打印',
+            'download not supported',
+            'print not supported',
+            'browser not supported',
+            'unsupported browser',
+            'please download',
+            'recommended download',
+            '体验更流畅',
+            '立即下载',
+            'access denied',
+            'access restricted',
+            'content unavailable'
+        ]
+        
+        content_lower = content.lower()
+        for pattern in unavailable_patterns:
+            if pattern.lower() in content_lower:
+                logger.info(f"检测到不可用内容提示: {pattern}")
+                return True
+        
+        # 检查内容是否过短（可能是错误页面）
+        if len(content.strip()) < 200:
+            # 检查是否包含常见错误页面关键词
+            error_keywords = ['error', '404', '403', '500', 'not found', 'forbidden']
+            if any(keyword in content_lower for keyword in error_keywords):
+                logger.info("检测到错误页面")
+                return True
+        
+        return False
+    
+    def _fetch_content_with_screenshot_ocr(self, url: str) -> Optional[str]:
+        """
+        使用截图OCR获取内容（fallback方法）
+        
+        Args:
+            url: 要访问的URL
+            
+        Returns:
+            str: 提取的文本内容，失败返回None
+        """
+        if not self.screenshot_ocr_fetcher:
+            logger.warning("截图OCR提取器未初始化")
+            return None
+        
+        if not self.playwright_manager:
+            logger.warning("Playwright管理器未初始化，无法截图")
+            return None
+        
+        try:
+            from config import USE_SCREENSHOT_OCR
+            if not USE_SCREENSHOT_OCR:
+                logger.info("截图OCR已在配置中禁用")
+                return None
+            
+            logger.info(f"开始使用截图OCR获取内容: {url}")
+            
+            # 1. 使用Playwright捕获截图
+            screenshot_paths = self.playwright_manager.capture_screenshots(url)
+            
+            if not screenshot_paths:
+                logger.error("截图捕获失败")
+                return None
+            
+            logger.info(f"成功捕获 {len(screenshot_paths)} 张截图")
+            
+            # 2. 使用OCR提取文本
+            ocr_text = self.screenshot_ocr_fetcher.extract_text_from_screenshots(screenshot_paths)
+            
+            if not ocr_text:
+                logger.error("OCR文本提取失败")
+                return None
+            
+            # 3. 验证OCR结果质量
+            if not self.screenshot_ocr_fetcher.validate_ocr_quality(ocr_text):
+                logger.warning("OCR结果质量验证未通过，但继续使用")
+                # 不强制要求，因为有些内容可能确实质量不高
+            
+            logger.info(f"✅ 截图OCR成功提取文本，长度: {len(ocr_text)} 字符")
+            return ocr_text
+            
+        except Exception as e:
+            logger.error(f"截图OCR处理失败: {e}")
+            return None
     
     def _download_with_retry(self, url: str, timeout: int) -> Optional[requests.Response]:
         """带重试的下载功能"""

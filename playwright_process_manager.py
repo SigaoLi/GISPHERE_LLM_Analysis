@@ -34,6 +34,37 @@ class PlaywrightProcessManager:
         Returns:
             str: 页面文本内容，失败返回None
         """
+        return self._run_playwright_task(url, scroll_enabled, False, timeout)
+    
+    def capture_screenshots(self, url: str, timeout: int = 60) -> Optional[list]:
+        """
+        通过独立进程捕获页面截图
+        
+        Args:
+            url: 要访问的URL
+            timeout: 超时时间（秒）
+            
+        Returns:
+            list: 截图文件路径列表，失败返回None
+        """
+        result = self._run_playwright_task(url, False, True, timeout)
+        if result and isinstance(result, dict) and result.get('screenshots'):
+            return result.get('screenshots')
+        return None
+    
+    def _run_playwright_task(self, url: str, scroll_enabled: bool = True, screenshot_mode: bool = False, timeout: int = 60) -> Optional:
+        """
+        通过独立进程运行Playwright任务（内部方法）
+        
+        Args:
+            url: 要访问的URL
+            scroll_enabled: 是否启用滚动加载
+            screenshot_mode: 是否启用截图模式
+            timeout: 超时时间（秒）
+            
+        Returns:
+            根据模式返回不同内容：文本模式返回str，截图模式返回dict
+        """
         try:
             logger.info(f"启动独立Playwright进程处理: {url}")
             
@@ -44,7 +75,8 @@ class PlaywrightProcessManager:
                 python_executable,
                 str(self.worker_script),
                 url,
-                'true' if scroll_enabled else 'false'
+                'true' if scroll_enabled else 'false',
+                'true' if screenshot_mode else 'false'
             ]
             
             # 运行独立进程
@@ -69,10 +101,16 @@ class PlaywrightProcessManager:
                 response = json.loads(result.stdout)
                 
                 if response.get('success'):
-                    content = response.get('content')
-                    length = response.get('length', 0)
-                    logger.info(f"✅ Playwright进程成功获取内容，长度: {length} 字符")
-                    return content
+                    if screenshot_mode:
+                        # 截图模式返回完整响应
+                        logger.info(f"✅ Playwright进程成功捕获截图，共 {len(response.get('screenshots', []))} 张")
+                        return response
+                    else:
+                        # 文本模式返回内容
+                        content = response.get('content')
+                        length = response.get('length', 0)
+                        logger.info(f"✅ Playwright进程成功获取内容，长度: {length} 字符")
+                        return content
                 else:
                     error = response.get('error', 'Unknown error')
                     logger.error(f"Playwright进程报告失败: {error}")

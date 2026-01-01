@@ -7,7 +7,7 @@ import pandas as pd
 import logging
 import warnings
 import inflect
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -86,7 +86,8 @@ class GoogleSheetsHandler:
         """初始化Google Sheets服务"""
         if self.service is None:
             creds = self.authorize_credentials()
-            self.service = build('sheets', 'v4', credentials=creds)
+            # 禁用文件缓存以避免警告（file_cache is only supported with oauth2client<4.0.0）
+            self.service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
             logger.info("Google Sheets API服务初始化成功")
     
     def fetch_data(self, range_name: str) -> List[List]:
@@ -216,26 +217,40 @@ class GoogleSheetsHandler:
         
         return row_data
     
-    def extract_link_from_row(self, row_data: Dict) -> Optional[str]:
-        """从行数据中提取链接"""
+    def extract_link_from_row(self, row_data: Dict) -> Tuple[Optional[str], bool]:
+        """
+        从行数据中提取链接
+        优先级：Source > Notes
+        
+        Returns:
+            tuple: (url, used_notes) - url为提取的链接，used_notes表示是否使用了Notes中的链接
+        """
         from utils import extract_url_from_text, is_valid_url
         
-        # 首先尝试从Notes中提取链接
+        # 优先从Source中获取链接
+        source = row_data.get('Source', '')
+        if source:
+            # Source可能直接是URL，也可能包含URL
+            if is_valid_url(source.strip()):
+                logger.info(f"从Source中获取到链接: {source.strip()}")
+                return (source.strip(), False)
+            else:
+                # 尝试从Source中提取URL
+                url = extract_url_from_text(source)
+                if url:
+                    logger.info(f"从Source中提取到链接: {url}")
+                    return (url, False)
+        
+        # 如果Source中没有链接，尝试从Notes中提取
         notes = row_data.get('Notes', '')
         if notes:
             url = extract_url_from_text(notes)
             if url:
                 logger.info(f"从Notes中提取到链接: {url}")
-                return url
-        
-        # 如果Notes中没有链接，尝试从Source中获取
-        source = row_data.get('Source', '')
-        if source and is_valid_url(source):
-            logger.info(f"从Source中获取到链接: {source}")
-            return source
+                return (url, True)
         
         logger.warning("未找到有效链接")
-        return None
+        return (None, False)
     
     def update_row_data(self, row_index: int, update_data: Dict, verifier: str = "LLM") -> bool:
         """更新指定行的数据"""

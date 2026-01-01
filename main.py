@@ -179,7 +179,7 @@ class LLMAnalysisSystem:
                 return False
             
             # 2. 提取链接
-            url = self.excel_handler.extract_link_from_row(row_data)
+            url, used_notes = self.excel_handler.extract_link_from_row(row_data)
             if not url:
                 error_msg = "未找到有效链接"
                 logger.warning(error_msg)
@@ -211,17 +211,26 @@ class LLMAnalysisSystem:
                 # 5. 根据是否有错误决定Verifier字段
                 verifier = "LLM" if not error_msg else ""  # 只有完全成功才设置Verifier为LLM
                 
+                # 6. 如果使用了Notes中的链接且Verifier设置为LLM，需要在Error列中填写"需转换链接"
+                final_error_msg = error_msg
+                if used_notes and verifier == "LLM":
+                    if final_error_msg:
+                        final_error_msg = f"{final_error_msg}; 需转换链接"
+                    else:
+                        final_error_msg = "需转换链接"
+                    logger.info(f"使用了Notes中的链接，将在Error列中填写'需转换链接'")
+                
                 # 同时更新结果和错误信息（如果有）
-                update_success = self.excel_handler.update_row_data_with_error(row_index, results, error_msg, verifier)
+                update_success = self.excel_handler.update_row_data_with_error(row_index, results, final_error_msg, verifier)
                 if not update_success:
-                    final_error_msg = f"结果更新失败{'; ' + error_msg if error_msg else ''}"
+                    final_error_msg = f"结果更新失败{'; ' + final_error_msg if final_error_msg else ''}"
                     logger.error("结果更新失败")
                     self.excel_handler.update_row_error(row_index, final_error_msg)
                     # 如果处理的是PDF文件，删除缓存的PDF文件
                     self.content_fetcher.delete_current_pdf()
                     return False
                 
-                if error_msg:
+                if final_error_msg:
                     logger.info(f"第 {row_index} 行部分成功（Verifier未设置，Error列记录失败信息）")
                 else:
                     logger.info(f"第 {row_index} 行完全成功（Verifier设置为LLM）")
